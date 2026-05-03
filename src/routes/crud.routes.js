@@ -72,7 +72,7 @@ function createCrudRouter(config, validators) {
           [
             supplierName,
             supplierName,
-            hasMissingInfo ? 'incomplete' : 'active',
+            hasMissingInfo ? 'Pending' : 'Active',
             hasMissingInfo ? 'معلومات ناقصة' : null
           ]
         );
