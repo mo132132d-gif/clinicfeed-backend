@@ -5,6 +5,7 @@ const { alertsRouter } = require('./alerts.routes');
 const { authRouter } = require('./auth.routes');
 const { createCrudRouter } = require('./crud.routes');
 const { supplierExtrasRouter } = require('./supplierExtras.routes');
+const { contactExtrasRouter } = require('./contactExtras.routes');
 const { authenticate } = require('../middleware/authenticate');
 
 const router = express.Router();
@@ -24,6 +25,9 @@ router.use('/alerts', alertsRouter);
 // POST /api/suppliers/import/preview
 // POST /api/suppliers/import
 router.use('/suppliers', supplierExtrasRouter);
+
+// Must be registered before generic /contacts/:id CRUD routes.
+router.use('/contacts', contactExtrasRouter);
 
 for (const [key, config] of Object.entries(entityConfigs)) {
   router.use(config.route, createCrudRouter(config, entityValidators[key]));

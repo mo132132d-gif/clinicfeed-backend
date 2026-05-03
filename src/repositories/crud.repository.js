@@ -26,13 +26,15 @@ function pickAllowed(data, fields) {
   }, {});
 }
 
+const MAX_LIST_LIMIT = 2000;
+
 function parseLimit(value) {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     return 25;
   }
 
-  return Math.min(parsed, 100);
+  return Math.min(parsed, MAX_LIST_LIMIT);
 }
 
 function parseOffset(value) {

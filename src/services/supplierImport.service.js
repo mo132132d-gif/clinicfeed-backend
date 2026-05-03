@@ -6,10 +6,44 @@ const { createHttpError } = require('../utils/httpError');
 
 const MISSING_NOTE = 'معلومات ناقصة';
 
+// Keys are compared after normalizeHeader(): Arabic hamza/alef/ة normalized, spaces/punctuation removed, lowercased.
 const headerAliases = {
-  name: new Set(['suppliername', 'supplier_name', 'vendorname', 'arabicname', 'englishname', 'name', 'اسم المورد', 'اسمالمورد']),
-  phone: new Set(['mobile', 'phone', 'primaryphone', 'رقمالجوال', 'الجوال']),
-  email: new Set(['email', 'e-mail', 'emailaddress', 'البريدالالكتروني', 'الايميل', 'الإيميل'])
+  name: new Set([
+    'suppliername',
+    'supplier_name',
+    'vendorname',
+    'companyname',
+    'arabicname',
+    'englishname',
+    'name',
+    'اسمالمورد',
+    'اسمالشركه',
+    'اسمالمنشاه',
+    'اسمالجهه'
+  ]),
+  phone: new Set([
+    'mobile',
+    'mobilenumber',
+    'phone',
+    'phonenumber',
+    'contactnumber',
+    'primaryphone',
+    'رقمالجوال',
+    'الجوال',
+    'رقمالهاتف',
+    'الهاتف',
+    'رقمالتواصل'
+  ]),
+  email: new Set([
+    'email',
+    'e-mail',
+    'contactemail',
+    'emailaddress',
+    'البريدالالكتروني',
+    'الايميل',
+    'الايمل'
+  ]),
+  city: new Set(['city', 'المدينه', 'مدينه'])
 };
 
 function extensionFromName(fileName) {
@@ -88,20 +122,88 @@ function cleanSupplierName(value) {
   return valueToText(value).replace(/\s+/g, ' ').trim() || null;
 }
 
+/** Excel often stores mobiles as numeric cells (leading zeros lost). Recover Saudi formats without truncating fractional noise incorrectly. */
+function digitsFromPhoneCell(value) {
+  if (value === null || value === undefined || value === '') {
+    return { digits: '', hadPlus: false };
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    if (value < 0 || Math.abs(value) >= 1e15) {
+      return { digits: '', hadPlus: false };
+    }
+    let n = Number(value);
+    if (!Number.isInteger(n)) {
+      n = Math.round(n);
+    }
+    if (!Number.isSafeInteger(n)) {
+      return { digits: '', hadPlus: false };
+    }
+    return { digits: String(Math.trunc(n)), hadPlus: false };
+  }
+
+  const text = String(value).trim();
+  const hadPlus = text.startsWith('+');
+  return {
+    digits: text.replace(/[^\d]/g, ''),
+    hadPlus
+  };
+}
+
+/** Prefer national Saudi mobile shape (05xxxxxxxx) when pattern matches; keep other digit strings as-is. */
+function normalizeSaudiPhoneDigits(digits) {
+  if (!digits || digits.length < 7 || /^0+$/.test(digits)) {
+    return null;
+  }
+
+  let d = digits;
+
+  while (d.startsWith('00') && d.length > 2) {
+    d = d.slice(2);
+  }
+
+  // +966 / 966 followed by national mobile without leading 0
+  if (/^9665\d{8}$/.test(d)) {
+    return `0${d.slice(3)}`;
+  }
+
+  // Already ten-digit national mobile
+  if (/^05\d{8}$/.test(d)) {
+    return d;
+  }
+
+  // Numeric cells that dropped leading 0 — nine digits beginning with 5
+  if (/^5\d{8}$/.test(d)) {
+    return `0${d}`;
+  }
+
+  return d.length >= 7 ? d : null;
+}
+
 function cleanPhone(value) {
   if (isMissingValue(value, { zeroIsMissing: true })) {
     return null;
   }
 
-  const text = valueToText(value);
-  const hasPlus = text.trim().startsWith('+');
-  const digits = text.replace(/[^\d]/g, '');
-
-  if (digits.length < 7 || /^0+$/.test(digits)) {
+  const { digits, hadPlus } = digitsFromPhoneCell(value);
+  const normalized = normalizeSaudiPhoneDigits(digits);
+  if (!normalized) {
     return null;
   }
 
-  return `${hasPlus ? '+' : ''}${digits}`;
+  if (normalized.startsWith('05') || /^0\d/.test(normalized)) {
+    return normalized;
+  }
+
+  return hadPlus ? `+${normalized.replace(/^\+/, '')}` : normalized;
+}
+
+function cleanCity(value) {
+  if (isMissingValue(value)) {
+    return null;
+  }
+
+  return valueToText(value).replace(/\s+/g, ' ').trim() || null;
 }
 
 function cleanEmail(value) {
@@ -187,7 +289,7 @@ async function fileToRows(file) {
 }
 
 function headerMap(headers) {
-  const map = { name: [], phone: [], email: [] };
+  const map = { name: [], phone: [], email: [], city: [] };
 
   headers.forEach((header, index) => {
     const normalized = normalizeHeader(header);
@@ -224,6 +326,7 @@ async function parseSupplierImportFile(file) {
     const name = firstCleanValue(row, map.name, cleanSupplierName);
     const phone = firstCleanValue(row, map.phone, cleanPhone);
     const email = firstCleanValue(row, map.email, cleanEmail);
+    const city = firstCleanValue(row, map.city, cleanCity);
     const incomplete = !phone || !email;
 
     return {
@@ -233,6 +336,7 @@ async function parseSupplierImportFile(file) {
       normalizedName: normalizeSupplierName(name || ''),
       phone,
       email,
+      city,
       incomplete
     };
   });
@@ -373,10 +477,10 @@ async function upsertContact(client, supplierId, row, knownContacts = null) {
     `
       UPDATE contacts
       SET
-        name = COALESCE(NULLIF(name, ''), $2),
-        phone = COALESCE(phone, $3),
-        whatsapp = COALESCE(whatsapp, $3),
-        email = COALESCE(email, $4),
+        name = COALESCE(NULLIF($2, ''), name),
+        phone = COALESCE($3, phone),
+        whatsapp = COALESCE($3, whatsapp),
+        email = COALESCE($4, email),
         is_primary = true
       WHERE id = $1
       RETURNING *
@@ -398,7 +502,23 @@ function createReport(totalRows = 0) {
     incomplete: 0,
     duplicates: 0,
     failed: 0,
-    failedRows: []
+    failedRows: [],
+    missingPhone: 0,
+    missingEmail: 0
+  };
+}
+
+function finalizeSupplierImportReport(report) {
+  return {
+    ...report,
+    importedSuppliers: report.imported,
+    updatedSuppliers: report.updated,
+    importedContacts: report.contactsCreated,
+    updatedContacts: report.contactsUpdated,
+    skippedRows: report.skipped,
+    missingPhone: report.missingPhone,
+    missingEmail: report.missingEmail,
+    errors: report.failedRows
   };
 }
 
@@ -414,6 +534,13 @@ async function importSupplierRows(rows, { actor, dryRun = false } = {}) {
         report.failed += 1;
         report.failedRows.push({ rowNumber: row.rowNumber, reason: 'Supplier name is missing' });
         continue;
+      }
+
+      if (!row.phone) {
+        report.missingPhone += 1;
+      }
+      if (!row.email) {
+        report.missingEmail += 1;
       }
 
       if (row.incomplete) {
@@ -456,6 +583,8 @@ async function importSupplierRows(rows, { actor, dryRun = false } = {}) {
         const notes = nextNotes(existing?.notes, row.incomplete);
         let supplier;
 
+        const cityUpdate = row.city || null;
+
         if (existing) {
           const result = await client.query(
             `
@@ -464,22 +593,23 @@ async function importSupplierRows(rows, { actor, dryRun = false } = {}) {
                 name_ar = COALESCE(NULLIF(name_ar, ''), $2),
                 name_en = COALESCE(NULLIF(name_en, ''), $2),
                 status = $3,
-                notes = $4
+                notes = $4,
+                city = COALESCE($5, city)
               WHERE id = $1
               RETURNING *
             `,
-            [existing.id, row.name, computedStatus, notes]
+            [existing.id, row.name, computedStatus, notes, cityUpdate]
           );
           supplier = result.rows[0];
           report.updated += 1;
         } else {
           const result = await client.query(
             `
-              INSERT INTO suppliers (name_ar, name_en, status, notes)
-              VALUES ($1, $1, $2, $3)
+              INSERT INTO suppliers (name_ar, name_en, status, notes, city)
+              VALUES ($1, $1, $2, $3, $4)
               RETURNING *
             `,
-            [row.name, computedStatus, notes]
+            [row.name, computedStatus, notes, cityUpdate]
           );
           supplier = result.rows[0];
           report.imported += 1;
@@ -516,7 +646,7 @@ async function importSupplierRows(rows, { actor, dryRun = false } = {}) {
     }
   }
 
-  return report;
+  return finalizeSupplierImportReport(report);
 }
 
 async function importSupplierFile(file, options = {}) {

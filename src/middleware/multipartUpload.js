@@ -18,7 +18,9 @@ const supplierImportMimeTypes = new Set([
   'application/vnd.ms-excel',
   'text/csv',
   'application/csv',
-  'text/plain'
+  'text/plain',
+  // Browser default when the part omits Content-Type — common for uploads from Explorer / older clients
+  'application/octet-stream'
 ]);
 
 const supplierImportExtensions = new Set(['xlsx', 'csv']);

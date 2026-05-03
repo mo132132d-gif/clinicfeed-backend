@@ -11,7 +11,8 @@
     "db:migrate": "node scripts/run-migrations.js",
     "db:create-admin": "node scripts/create-admin.js",
     "db:seed": "node scripts/seed-sample-data.js",
-    "cleanup:failed-import": "node scripts/cleanupFailedSupplierImport.js"
+    "cleanup:failed-import": "node scripts/cleanupFailedSupplierImport.js",
+    "db:clear-suppliers": "node scripts/clearSuppliers.js"
   },
   "keywords": [
     "clinicfeed",
