@@ -1,0 +1,52 @@
+const compression = require('compression');
+const cors = require('cors');
+const express = require('express');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
+const morgan = require('morgan');
+const { env } = require('./config/env');
+const { apiRouter } = require('./routes');
+const { errorHandler } = require('./middleware/errorHandler');
+const { notFound } = require('./middleware/notFound');
+
+const app = express();
+
+const corsOptions = env.corsOrigins === '*'
+  ? { origin: '*' }
+  : {
+      origin(origin, callback) {
+        if (!origin || env.corsOrigins.includes(origin)) {
+          callback(null, true);
+          return;
+        }
+
+        callback(new Error('Origin is not allowed by CORS'));
+      }
+    };
+
+app.disable('x-powered-by');
+app.use(helmet());
+app.use(cors(corsOptions));
+app.use(compression());
+app.use(express.json({ limit: env.requestBodyLimit }));
+app.use(express.urlencoded({ extended: false, limit: env.requestBodyLimit }));
+app.use(morgan(env.isProduction ? 'combined' : 'dev'));
+app.use(rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 300,
+  standardHeaders: true,
+  legacyHeaders: false
+}));
+
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    service: 'supplier-management-backend'
+  });
+});
+
+app.use('/api', apiRouter);
+app.use(notFound);
+app.use(errorHandler);
+
+module.exports = { app };
