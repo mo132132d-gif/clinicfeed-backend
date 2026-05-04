@@ -47,6 +47,33 @@ const entityConfigs = {
     permissions: { read: 'documents:read', write: 'documents:write' },
     audit: true
   },
+  requestTickets: {
+    table: 'request_tickets',
+    route: '/request-tickets',
+    entityType: 'RequestTicket',
+    fields: [
+      'customer_name',
+      'phone',
+      'email',
+      'country',
+      'region',
+      'request_description',
+      'assigned_to',
+      'status',
+      'priority',
+      'source',
+      'internal_notes',
+      'cancellation_reason',
+      'qr_code',
+      'closed_at'
+    ],
+    filters: ['status', 'assigned_to', 'country', 'region', 'priority', 'source'],
+    searchable: ['ticket_number', 'customer_name', 'phone', 'email', 'country', 'region', 'request_description', 'assigned_to'],
+    sortable: ['created_at', 'updated_at', 'closed_at', 'ticket_number', 'customer_name', 'status', 'priority'],
+    defaultSort: { field: 'created_at', direction: 'DESC' },
+    permissions: { read: 'suppliers:read', write: 'suppliers:write' },
+    audit: true
+  },
   activityLogs: {
     table: 'activity_logs',
     route: '/activity-logs',

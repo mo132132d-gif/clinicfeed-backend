@@ -66,6 +66,36 @@ const documentCreate = z.object({
   last_updated: optionalDateTime
 }).strict();
 
+const requestTicketStatuses = [
+  'new',
+  'under_review',
+  'waiting_customer',
+  'waiting_supplier',
+  'quotation_sent',
+  'in_progress',
+  'completed',
+  'cancelled'
+];
+
+const requestTicketPriorities = ['low', 'medium', 'high', 'urgent'];
+
+const requestTicketCreate = z.object({
+  customer_name: requiredText,
+  phone: optionalText,
+  email: optionalEmail,
+  country: optionalText,
+  region: optionalText,
+  request_description: requiredText,
+  assigned_to: optionalText,
+  status: z.enum(requestTicketStatuses).optional(),
+  priority: z.enum(requestTicketPriorities).optional(),
+  source: optionalText,
+  internal_notes: optionalText,
+  cancellation_reason: optionalText,
+  qr_code: optionalText,
+  closed_at: optionalDateTime
+}).strict();
+
 const activityLogCreate = z.object({
   user_id: uuid.nullable().optional(),
   action: requiredText,
@@ -91,6 +121,10 @@ const entityValidators = {
   documents: {
     create: documentCreate,
     update: nonEmptyUpdate(documentCreate)
+  },
+  requestTickets: {
+    create: requestTicketCreate,
+    update: nonEmptyUpdate(requestTicketCreate)
   },
   activityLogs: {
     create: activityLogCreate,
