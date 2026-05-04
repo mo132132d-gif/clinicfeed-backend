@@ -125,14 +125,22 @@ async function createUser(data, actor) {
   const email = data.email.toLowerCase();
 
   return withTransaction(async (client) => {
-    const result = await client.query(
-      `
-        INSERT INTO users (name, email, password_hash, role, is_active)
-        VALUES ($1, $2, $3, $4, COALESCE($5, true))
-        RETURNING ${publicUserFields}
-      `,
-      [data.name, email, passwordHash, data.role, data.is_active]
-    );
+    let result;
+    try {
+      result = await client.query(
+        `
+          INSERT INTO users (name, email, password_hash, role, is_active)
+          VALUES ($1, $2, $3, $4, COALESCE($5, true))
+          RETURNING ${publicUserFields}
+        `,
+        [data.name, email, passwordHash, data.role, data.is_active]
+      );
+    } catch (error) {
+      if (error?.code === '23505') {
+        throw createHttpError(409, 'Email already exists');
+      }
+      throw error;
+    }
 
     const user = result.rows[0];
     await logActivity({
@@ -193,15 +201,27 @@ async function updateUser(id, data, actor) {
       fields.push(`is_active = $${values.length}`);
     }
 
-    const result = await client.query(
-      `
-        UPDATE users
-        SET ${fields.join(', ')}
-        WHERE id = $1
-        RETURNING ${publicUserFields}
-      `,
-      values
-    );
+    if (fields.length === 0) {
+      throw createHttpError(400, 'No valid fields provided for update');
+    }
+
+    let result;
+    try {
+      result = await client.query(
+        `
+          UPDATE users
+          SET ${fields.join(', ')}
+          WHERE id = $1
+          RETURNING ${publicUserFields}
+        `,
+        values
+      );
+    } catch (error) {
+      if (error?.code === '23505') {
+        throw createHttpError(409, 'Email already exists');
+      }
+      throw error;
+    }
 
     const user = result.rows[0];
     await logActivity({

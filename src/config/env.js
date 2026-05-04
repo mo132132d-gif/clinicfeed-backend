@@ -42,6 +42,7 @@ function corsOriginsFromEnv() {
   return value
     .split(',')
     .map((origin) => origin.trim())
+    .map((origin) => origin.replace(/\/+$/, ''))
     .filter(Boolean);
 }
 

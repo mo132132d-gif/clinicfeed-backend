@@ -1,5 +1,17 @@
 const rolePermissions = {
   admin: ['*'],
+  manager: [
+    'suppliers:read',
+    'suppliers:write',
+    'contacts:read',
+    'contacts:write',
+    'contracts:read',
+    'contracts:write',
+    'documents:read',
+    'documents:write',
+    'activity_logs:read',
+    'alerts:read'
+  ],
   operations: [
     'suppliers:read',
     'suppliers:write',
