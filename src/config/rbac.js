@@ -12,7 +12,9 @@ const rolePermissions = {
     'activity_logs:read',
     'alerts:read',
     'request_tickets:read',
-    'request_tickets:write'
+    'request_tickets:write',
+    'supplier_payment_requests:read',
+    'supplier_payment_requests:write'
   ],
   operations: [
     'suppliers:read',
@@ -26,7 +28,9 @@ const rolePermissions = {
     'activity_logs:read',
     'alerts:read',
     'request_tickets:read',
-    'request_tickets:write'
+    'request_tickets:write',
+    'supplier_payment_requests:read',
+    'supplier_payment_requests:write'
   ],
   sales: [
     'suppliers:read',
@@ -34,7 +38,8 @@ const rolePermissions = {
     'contracts:read',
     'documents:read',
     'alerts:read',
-    'request_tickets:read'
+    'request_tickets:read',
+    'supplier_payment_requests:read'
   ],
   viewer: [
     'suppliers:read',
@@ -42,7 +47,8 @@ const rolePermissions = {
     'contracts:read',
     'documents:read',
     'alerts:read',
-    'request_tickets:read'
+    'request_tickets:read',
+    'supplier_payment_requests:read'
   ]
 };
 

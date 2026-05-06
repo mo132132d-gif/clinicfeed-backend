@@ -1,16 +1,17 @@
 const express = require('express');
-const multer = require('multer');
-const { asyncHandler } = require('../middleware/asyncHandler');
-const { authorize } = require('../middleware/auth');
+const { authenticate } = require('../middleware/authenticate');
+const { authorize } = require('../middleware/authorize');
+const { multipartUpload } = require('../middleware/multipartUpload');
+const { asyncHandler } = require('../utils/asyncHandler');
 const supplierPaymentRequestsService = require('../services/supplierPaymentRequests.service');
-const { uploadSupplierFile } = require('../services/storage.service');
 
 const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage() });
+
+router.use(authenticate);
 
 router.get(
   '/',
-  authorize('request_tickets:read'),
+  authorize('supplier_payment_requests:read'),
   asyncHandler(async (req, res) => {
     const data = await supplierPaymentRequestsService.list(req.query);
     res.json(data);
@@ -19,70 +20,74 @@ router.get(
 
 router.get(
   '/:id',
-  authorize('request_tickets:read'),
+  authorize('supplier_payment_requests:read'),
   asyncHandler(async (req, res) => {
     const data = await supplierPaymentRequestsService.getById(req.params.id);
-    res.json(data);
+    res.json({ data });
   })
 );
 
 router.post(
   '/',
-  authorize('request_tickets:write'),
+  authorize('supplier_payment_requests:write'),
   asyncHandler(async (req, res) => {
-    const data = await supplierPaymentRequestsService.create(req.body, req.user);
-    res.status(201).json(data);
+    const data = await supplierPaymentRequestsService.create(req.body, req.user?.id);
+    res.status(201).json({ data });
+  })
+);
+
+router.put(
+  '/:id',
+  authorize('supplier_payment_requests:write'),
+  asyncHandler(async (req, res) => {
+    const data = await supplierPaymentRequestsService.update(req.params.id, req.body, req.user?.id);
+    res.json({ data });
   })
 );
 
 router.patch(
   '/:id',
-  authorize('request_tickets:write'),
+  authorize('supplier_payment_requests:write'),
   asyncHandler(async (req, res) => {
-    const data = await supplierPaymentRequestsService.update(req.params.id, req.body);
-    res.json(data);
+    const data = await supplierPaymentRequestsService.update(req.params.id, req.body, req.user?.id);
+    res.json({ data });
   })
 );
 
 router.delete(
   '/:id',
-  authorize('request_tickets:write'),
+  authorize('supplier_payment_requests:write'),
   asyncHandler(async (req, res) => {
-    const data = await supplierPaymentRequestsService.remove(req.params.id);
-    res.json(data);
-  })
-);
-
-router.get(
-  '/:id/documents',
-  authorize('request_tickets:read'),
-  asyncHandler(async (req, res) => {
-    const data = await supplierPaymentRequestsService.listDocuments(req.params.id);
-    res.json(data);
+    const data = await supplierPaymentRequestsService.remove(req.params.id, req.user?.id);
+    res.json({ data });
   })
 );
 
 router.post(
   '/:id/documents/upload',
-  authorize('request_tickets:write'),
-  upload.single('file'),
+  authorize('supplier_payment_requests:write'),
+  multipartUpload,
   asyncHandler(async (req, res) => {
-    if (!req.file) {
-      return res.status(400).json({ message: 'No file uploaded' });
-    }
+    const data = await supplierPaymentRequestsService.uploadDocument(req.params.id, req.file, req.body, req.user?.id);
+    res.status(201).json({ data });
+  })
+);
 
-    const uploaded = await uploadSupplierFile(req.file, `supplier-payment-requests/${req.params.id}`);
+router.get(
+  '/:id/documents',
+  authorize('supplier_payment_requests:read'),
+  asyncHandler(async (req, res) => {
+    const data = await supplierPaymentRequestsService.listDocuments(req.params.id);
+    res.json({ data });
+  })
+);
 
-    const data = await supplierPaymentRequestsService.addDocument(req.params.id, {
-      document_type: req.body.document_type || 'مستند آخر',
-      file_url: uploaded.url,
-      file_name: req.file.originalname,
-      file_mime_type: req.file.mimetype,
-      file_size: req.file.size,
-      file_path: uploaded.path
-    }, req.user);
-
-    res.status(201).json(data);
+router.delete(
+  '/:id/documents/:documentId',
+  authorize('supplier_payment_requests:write'),
+  asyncHandler(async (req, res) => {
+    const data = await supplierPaymentRequestsService.deleteDocument(req.params.id, req.params.documentId, req.user?.id);
+    res.json({ data });
   })
 );
 

@@ -1,6 +1,7 @@
 const compression = require('compression');
 const cors = require('cors');
 const express = require('express');
+const path = require('node:path');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const morgan = require('morgan');
@@ -30,6 +31,7 @@ app.use(cors(corsOptions));
 app.use(compression());
 app.use(express.json({ limit: env.requestBodyLimit }));
 app.use(express.urlencoded({ extended: false, limit: env.requestBodyLimit }));
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 app.use(morgan(env.isProduction ? 'combined' : 'dev'));
 app.use(rateLimit({
   windowMs: 15 * 60 * 1000,
