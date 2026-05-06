@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS supplier_payment_requests (
   request_number text UNIQUE,
   supplier_id uuid NULL REFERENCES suppliers(id),
   amount numeric(14,2) NOT NULL CHECK (amount > 0),
+  payment_reason text NOT NULL DEFAULT 'Supplier payment request',
   status text NOT NULL DEFAULT 'New',
   priority text DEFAULT 'Normal',
   due_date date NULL,

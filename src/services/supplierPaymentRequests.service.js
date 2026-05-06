@@ -24,6 +24,7 @@ const SUPPLIER_PAYMENT_REQUEST_COLUMNS = [
   'request_number',
   'supplier_id',
   'amount',
+  'payment_reason',
   'status',
   'priority',
   'due_date',
@@ -50,10 +51,12 @@ const SUPPLIER_PAYMENT_REQUEST_COLUMN_TYPES = {
 const SUPPLIER_RESPONSE_COLUMNS = ['name_ar', 'name_en', 'cr_number', 'vat_number', 'city', 'category', 'status'];
 const SUPPLIER_SEARCH_COLUMNS = ['name_ar', 'name_en', 'city', 'category', 'cr_number', 'vat_number'];
 const REQUEST_SEARCH_COLUMNS = ['request_number', 'reference_number', 'invoice_number', 'notes'];
+const DEFAULT_PAYMENT_REASON = 'Supplier payment request';
 const MUTABLE_FIELDS = [
   'request_number',
   'supplier_id',
   'amount',
+  'payment_reason',
   'status',
   'priority',
   'due_date',
@@ -158,6 +161,12 @@ function normalizeNullableText(value) {
   return trimmed || null;
 }
 
+function normalizePaymentReason(value, fallback = DEFAULT_PAYMENT_REASON) {
+  if (value === undefined || value === null) return fallback;
+  const trimmed = String(value).trim();
+  return trimmed || fallback;
+}
+
 function normalizeNullableUuid(value, fieldName) {
   const normalized = normalizeNullableText(value);
   if (normalized === undefined || normalized === null) {
@@ -258,6 +267,10 @@ function preparePayload(data) {
     if (Object.prototype.hasOwnProperty.call(payload, field)) {
       payload[field] = normalizeNullableText(payload[field]);
     }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(payload, 'payment_reason')) {
+    payload.payment_reason = normalizePaymentReason(payload.payment_reason);
   }
 
   if (Object.prototype.hasOwnProperty.call(payload, 'supplier_id')) {
@@ -889,6 +902,7 @@ async function create(data = {}, userId) {
 
     payload.status = payload.status || 'New';
     payload.priority = payload.priority || 'Normal';
+    payload.payment_reason = normalizePaymentReason(payload.payment_reason);
     if (schema.requestColumns.has('supplier_id')) {
       payload.supplier_id = supplierIds[0];
     }
