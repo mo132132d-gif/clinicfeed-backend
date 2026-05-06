@@ -31,6 +31,7 @@ const MUTABLE_FIELDS = [
   'assigned_to',
   'notes'
 ];
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function compactPayload(data, fields) {
   return fields.reduce((payload, field) => {
@@ -63,28 +64,100 @@ function normalizeNullableText(value) {
   return trimmed || null;
 }
 
+function normalizeNullableUuid(value, fieldName) {
+  const normalized = normalizeNullableText(value);
+  if (normalized === undefined || normalized === null) {
+    return normalized;
+  }
+
+  if (!UUID_PATTERN.test(normalized)) {
+    throw createHttpError(400, `${fieldName} must be a valid UUID`);
+  }
+
+  return normalized;
+}
+
+function requireUuid(value, fieldName) {
+  const normalized = normalizeNullableUuid(value, fieldName);
+  if (!normalized) {
+    throw createHttpError(400, `${fieldName} is required`);
+  }
+
+  return normalized;
+}
+
+function normalizeNullableDate(value, fieldName) {
+  const normalized = normalizeNullableText(value);
+  if (normalized === undefined || normalized === null) {
+    return normalized;
+  }
+
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    throw createHttpError(400, `${fieldName} must be a valid date in YYYY-MM-DD format`);
+  }
+
+  const [, year, month, day] = match;
+  const parsed = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  if (
+    parsed.getUTCFullYear() !== Number(year)
+    || parsed.getUTCMonth() !== Number(month) - 1
+    || parsed.getUTCDate() !== Number(day)
+  ) {
+    throw createHttpError(400, `${fieldName} must be a valid date in YYYY-MM-DD format`);
+  }
+
+  return normalized;
+}
+
 function normalizeSupplierIds(data) {
   const value = data.supplier_ids ?? data.supplierIds;
   const ids = [];
 
   if (Array.isArray(value)) {
     ids.push(...value);
+  } else if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          ids.push(...parsed);
+        } else {
+          ids.push(...trimmed.split(','));
+        }
+      } catch {
+        ids.push(...trimmed.split(','));
+      }
+    }
   }
 
   if (data.supplier_id) {
     ids.unshift(data.supplier_id);
   }
 
-  return [...new Set(ids.filter(Boolean).map((id) => String(id)))];
+  const normalizedIds = ids
+    .map((id) => normalizeNullableUuid(id, 'supplier_ids'))
+    .filter(Boolean);
+
+  return [...new Set(normalizedIds)];
 }
 
 function preparePayload(data) {
   const payload = compactPayload(data, MUTABLE_FIELDS);
 
-  for (const field of ['request_number', 'supplier_id', 'due_date', 'payment_method', 'invoice_number', 'reference_number', 'assigned_to', 'notes']) {
+  for (const field of ['request_number', 'payment_method', 'invoice_number', 'reference_number', 'assigned_to', 'notes']) {
     if (Object.prototype.hasOwnProperty.call(payload, field)) {
       payload[field] = normalizeNullableText(payload[field]);
     }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(payload, 'supplier_id')) {
+    payload.supplier_id = normalizeNullableUuid(payload.supplier_id, 'supplier_id');
+  }
+
+  if (Object.prototype.hasOwnProperty.call(payload, 'due_date')) {
+    payload.due_date = normalizeNullableDate(payload.due_date, 'due_date');
   }
 
   if (Object.prototype.hasOwnProperty.call(payload, 'amount')) {
@@ -136,7 +209,8 @@ function buildFilters(params = {}) {
   }
 
   if (params.supplier_id) {
-    values.push(params.supplier_id, params.supplier_id);
+    const supplierId = normalizeNullableUuid(params.supplier_id, 'supplier_id');
+    values.push(supplierId, supplierId);
     const firstIndex = values.length - 1;
     const secondIndex = values.length;
     conditions.push(`(
@@ -217,6 +291,7 @@ function limitOffset(params = {}, startIndex) {
 
 async function generateRequestNumber(client) {
   const datePart = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  await client.query("SELECT pg_advisory_xact_lock(hashtext('supplier_payment_requests_request_number'))");
   const result = await client.query(
     `
       SELECT COALESCE(MAX(substring(request_number from 'SPR-[0-9]{8}-([0-9]{4})$')::int), 0) + 1 AS next_number
@@ -242,7 +317,7 @@ async function addActivity(client, paymentRequestId, action, options = {}) {
       options.oldValue === undefined ? null : String(options.oldValue),
       options.newValue === undefined ? null : String(options.newValue),
       options.description || null,
-      options.userId || null
+      UUID_PATTERN.test(String(options.userId || '')) ? options.userId : null
     ]
   );
 }
@@ -383,7 +458,8 @@ async function list(params = {}) {
 }
 
 async function getById(id) {
-  const result = await query('SELECT * FROM supplier_payment_requests WHERE id = $1 AND deleted_at IS NULL', [id]);
+  const requestId = requireUuid(id, 'id');
+  const result = await query('SELECT * FROM supplier_payment_requests WHERE id = $1 AND deleted_at IS NULL', [requestId]);
   const paymentRequest = result.rows[0];
 
   if (!paymentRequest) {
@@ -392,14 +468,14 @@ async function getById(id) {
 
   const [withSuppliers, documents, activity_logs] = await Promise.all([
     attachSuppliers([paymentRequest]).then(([row]) => row),
-    listDocuments(id),
-    listActivityLogs(id)
+    listDocuments(requestId),
+    listActivityLogs(requestId)
   ]);
 
   return { ...withSuppliers, documents, activity_logs };
 }
 
-async function create(data, userId) {
+async function create(data = {}, userId) {
   const supplierIds = normalizeSupplierIds(data);
   const payload = preparePayload(data);
 
@@ -410,7 +486,7 @@ async function create(data, userId) {
   payload.status = payload.status || 'New';
   payload.priority = payload.priority || 'Normal';
   payload.supplier_id = payload.supplier_id || supplierIds[0] || null;
-  payload.created_by = userId || null;
+  payload.created_by = UUID_PATTERN.test(String(userId || '')) ? userId : null;
 
   const row = await withTransaction(async (client) => {
     if (!payload.request_number) {
@@ -440,8 +516,9 @@ async function create(data, userId) {
   return getById(row.id);
 }
 
-async function update(id, data, userId) {
-  const existing = await getById(id);
+async function update(id, data = {}, userId) {
+  const requestId = requireUuid(id, 'id');
+  const existing = await getById(requestId);
   const supplierIdsProvided = Object.prototype.hasOwnProperty.call(data, 'supplier_ids') || Object.prototype.hasOwnProperty.call(data, 'supplierIds');
   const supplierIds = supplierIdsProvided ? normalizeSupplierIds(data) : undefined;
   const payload = preparePayload(data);
@@ -464,20 +541,20 @@ async function update(id, data, userId) {
           WHERE id = $1 AND deleted_at IS NULL
           RETURNING *
         `,
-        [id, ...updateSql.values]
+        [requestId, ...updateSql.values]
       );
 
       if (!result.rows[0]) {
         throw createHttpError(404, 'Supplier payment request not found');
       }
 
-      await addActivity(client, id, 'updated', {
+      await addActivity(client, requestId, 'updated', {
         description: 'Supplier payment request updated',
         userId
       });
 
       if (Object.prototype.hasOwnProperty.call(payload, 'status') && payload.status !== existing.status) {
-        await addActivity(client, id, 'status changed', {
+        await addActivity(client, requestId, 'status changed', {
           oldValue: existing.status,
           newValue: payload.status,
           description: 'Status changed',
@@ -486,7 +563,7 @@ async function update(id, data, userId) {
       }
 
       if (Object.prototype.hasOwnProperty.call(payload, 'amount') && Number(payload.amount) !== Number(existing.amount || 0)) {
-        await addActivity(client, id, 'amount changed', {
+        await addActivity(client, requestId, 'amount changed', {
           oldValue: existing.amount,
           newValue: payload.amount,
           description: 'Amount changed',
@@ -496,14 +573,15 @@ async function update(id, data, userId) {
     }
 
     if (supplierIds !== undefined) {
-      await setSupplierLinks(client, id, supplierIds);
+      await setSupplierLinks(client, requestId, supplierIds);
     }
   });
 
-  return getById(id);
+  return getById(requestId);
 }
 
 async function remove(id, userId) {
+  const requestId = requireUuid(id, 'id');
   const row = await withTransaction(async (client) => {
     const result = await client.query(
       `
@@ -512,14 +590,14 @@ async function remove(id, userId) {
         WHERE id = $1 AND deleted_at IS NULL
         RETURNING *
       `,
-      [id]
+      [requestId]
     );
 
     if (!result.rows[0]) {
       throw createHttpError(404, 'Supplier payment request not found');
     }
 
-    await addActivity(client, id, 'deleted', {
+    await addActivity(client, requestId, 'deleted', {
       oldValue: result.rows[0].request_number,
       description: 'Supplier payment request deleted',
       userId
@@ -532,6 +610,7 @@ async function remove(id, userId) {
 }
 
 async function listDocuments(paymentRequestId) {
+  const requestId = requireUuid(paymentRequestId, 'payment_request_id');
   const result = await query(
     `
       SELECT *
@@ -539,14 +618,15 @@ async function listDocuments(paymentRequestId) {
       WHERE payment_request_id = $1
       ORDER BY created_at DESC
     `,
-    [paymentRequestId]
+    [requestId]
   );
 
   return result.rows;
 }
 
 async function uploadDocument(paymentRequestId, file, data, userId) {
-  await getById(paymentRequestId);
+  const requestId = requireUuid(paymentRequestId, 'payment_request_id');
+  await getById(requestId);
 
   const documentType = data.document_type || data.documentType || 'Other';
   if (!DOCUMENT_TYPES.has(documentType)) {
@@ -555,8 +635,8 @@ async function uploadDocument(paymentRequestId, file, data, userId) {
 
   const originalName = sanitizeFileName(file.originalName);
   const storedName = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}-${originalName}`;
-  const relativePath = path.posix.join('supplier-payment-requests', paymentRequestId, storedName);
-  const absoluteDir = path.join(__dirname, '..', '..', 'uploads', 'supplier-payment-requests', paymentRequestId);
+  const relativePath = path.posix.join('supplier-payment-requests', requestId, storedName);
+  const absoluteDir = path.join(__dirname, '..', '..', 'uploads', 'supplier-payment-requests', requestId);
   const absolutePath = path.join(absoluteDir, storedName);
 
   await fs.mkdir(absoluteDir, { recursive: true });
@@ -571,18 +651,18 @@ async function uploadDocument(paymentRequestId, file, data, userId) {
         RETURNING *
       `,
       [
-        paymentRequestId,
+        requestId,
         documentType,
         originalName,
         `/uploads/${relativePath}`,
         path.join('uploads', relativePath),
         file.mimeType,
         file.size,
-        userId || null
+        UUID_PATTERN.test(String(userId || '')) ? userId : null
       ]
     );
 
-    await addActivity(client, paymentRequestId, 'document uploaded', {
+    await addActivity(client, requestId, 'document uploaded', {
       newValue: originalName,
       description: `Document uploaded: ${documentType}`,
       userId
@@ -595,6 +675,8 @@ async function uploadDocument(paymentRequestId, file, data, userId) {
 }
 
 async function deleteDocument(paymentRequestId, documentId, userId) {
+  const requestId = requireUuid(paymentRequestId, 'payment_request_id');
+  const docId = requireUuid(documentId, 'document_id');
   const row = await withTransaction(async (client) => {
     const result = await client.query(
       `
@@ -602,14 +684,14 @@ async function deleteDocument(paymentRequestId, documentId, userId) {
         WHERE id = $1 AND payment_request_id = $2
         RETURNING *
       `,
-      [documentId, paymentRequestId]
+      [docId, requestId]
     );
 
     if (!result.rows[0]) {
       throw createHttpError(404, 'Document not found');
     }
 
-    await addActivity(client, paymentRequestId, 'document deleted', {
+    await addActivity(client, requestId, 'document deleted', {
       oldValue: result.rows[0].file_name,
       description: 'Document deleted',
       userId
@@ -633,6 +715,7 @@ async function deleteDocument(paymentRequestId, documentId, userId) {
 }
 
 async function listActivityLogs(paymentRequestId) {
+  const requestId = requireUuid(paymentRequestId, 'payment_request_id');
   const result = await query(
     `
       SELECT *
@@ -640,7 +723,7 @@ async function listActivityLogs(paymentRequestId) {
       WHERE payment_request_id = $1
       ORDER BY created_at DESC
     `,
-    [paymentRequestId]
+    [requestId]
   );
 
   return result.rows;
