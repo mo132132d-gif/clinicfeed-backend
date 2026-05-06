@@ -6,6 +6,7 @@ const { authRouter } = require('./auth.routes');
 const { createCrudRouter } = require('./crud.routes');
 const { dashboardRouter } = require('./dashboard.routes');
 const { requestTicketsRouter } = require('./requestTickets.routes');
+const { supplierPaymentRequestsRouter } = require('./supplierPaymentRequests.routes');
 const { supplierExtrasRouter } = require('./supplierExtras.routes');
 const { contactExtrasRouter } = require('./contactExtras.routes');
 const { authenticate } = require('../middleware/authenticate');
@@ -23,6 +24,7 @@ router.use('/auth', authRouter);
 router.use('/alerts', alertsRouter);
 router.use('/dashboard', dashboardRouter);
 router.use('/request-tickets', requestTicketsRouter);
+router.use('/supplier-payment-requests', supplierPaymentRequestsRouter);
 
 // Supplier custom routes must be registered before the generic CRUD router.
 // This includes:
