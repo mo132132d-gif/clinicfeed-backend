@@ -15,7 +15,9 @@ function errorHandler(err, req, res, next) {
     detail: err.detail,
     hint: err.hint,
     table: err.table,
+    column: err.column,
     constraint: err.constraint,
+    originalUrl: req.originalUrl,
     path: req.path,
     method: req.method,
   });

@@ -18,6 +18,38 @@ const STATUSES = new Set([
 
 const PRIORITIES = new Set(['Low', 'Normal', 'High', 'Urgent']);
 const DOCUMENT_TYPES = new Set(['Supplier Invoice', 'Quotation', 'Payment Receipt', 'Bank Transfer', 'Other']);
+const OPTIONAL_RELATION_ERROR_CODES = new Set(['42P01', '42703']);
+const SUPPLIER_PAYMENT_REQUEST_COLUMNS = [
+  'id',
+  'request_number',
+  'supplier_id',
+  'amount',
+  'status',
+  'priority',
+  'due_date',
+  'payment_method',
+  'invoice_number',
+  'reference_number',
+  'assigned_to',
+  'notes',
+  'created_by',
+  'created_at',
+  'updated_at',
+  'deleted_at'
+];
+const SUPPLIER_PAYMENT_REQUEST_COLUMN_TYPES = {
+  id: 'uuid',
+  supplier_id: 'uuid',
+  amount: 'numeric',
+  due_date: 'date',
+  created_by: 'uuid',
+  created_at: 'timestamptz',
+  updated_at: 'timestamptz',
+  deleted_at: 'timestamptz'
+};
+const SUPPLIER_RESPONSE_COLUMNS = ['name_ar', 'name_en', 'cr_number', 'vat_number', 'city', 'category', 'status'];
+const SUPPLIER_SEARCH_COLUMNS = ['name_ar', 'name_en', 'city', 'category', 'cr_number', 'vat_number'];
+const REQUEST_SEARCH_COLUMNS = ['request_number', 'reference_number', 'invoice_number', 'notes'];
 const MUTABLE_FIELDS = [
   'request_number',
   'supplier_id',
@@ -32,6 +64,58 @@ const MUTABLE_FIELDS = [
   'notes'
 ];
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const tableColumnsCache = new Map();
+
+async function tableColumns(tableName) {
+  if (tableColumnsCache.has(tableName)) {
+    return tableColumnsCache.get(tableName);
+  }
+
+  const result = await query(
+    `
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = $1
+    `,
+    [tableName]
+  );
+  const columns = new Set(result.rows.map((row) => row.column_name));
+  tableColumnsCache.set(tableName, columns);
+  return columns;
+}
+
+function hasColumns(columns, requiredColumns) {
+  return requiredColumns.every((column) => columns.has(column));
+}
+
+function selectColumn(alias, columns, column, type = 'text') {
+  if (columns.has(column)) {
+    return `${alias}."${column}"`;
+  }
+
+  return `NULL::${type}`;
+}
+
+function supplierSearchSql(alias, supplierColumns, index) {
+  return SUPPLIER_SEARCH_COLUMNS
+    .filter((column) => supplierColumns.has(column))
+    .map((column) => `${alias}."${column}" ILIKE $${index}`);
+}
+
+function logServiceError(label, error, context = {}) {
+  console.error(`Supplier payment requests service ${label} failed:`, {
+    ...context,
+    message: error.message,
+    stack: error.stack,
+    code: error.code,
+    detail: error.detail,
+    hint: error.hint,
+    table: error.table,
+    column: error.column,
+    constraint: error.constraint
+  });
+}
 
 function compactPayload(data, fields) {
   return fields.reduce((payload, field) => {
@@ -40,6 +124,16 @@ function compactPayload(data, fields) {
     }
 
     return payload;
+  }, {});
+}
+
+function payloadForColumns(payload, columns) {
+  return Object.entries(payload).reduce((filtered, [key, value]) => {
+    if (columns.has(key)) {
+      filtered[key] = value;
+    }
+
+    return filtered;
   }, {});
 }
 
@@ -200,39 +294,50 @@ function addFilter(conditions, values, sql, value) {
   conditions.push(sql.replace('?', `$${values.length}`));
 }
 
-function buildFilters(params = {}) {
-  const conditions = ['spr.deleted_at IS NULL'];
+function buildFilters(params = {}, schema = {}) {
+  const requestColumns = schema.requestColumns || new Set();
+  const conditions = [];
   const values = [];
+  const supplierColumns = schema.supplierColumns || new Set();
+  const linkColumns = schema.linkColumns || new Set();
+  const hasSuppliersTable = supplierColumns.has('id');
+  const hasSupplierLinks = hasColumns(linkColumns, ['payment_request_id', 'supplier_id']);
 
-  if (params.status && String(params.status).toLowerCase() !== 'all') {
+  if (requestColumns.has('deleted_at')) {
+    conditions.push('spr.deleted_at IS NULL');
+  }
+
+  if (params.status && String(params.status).toLowerCase() !== 'all' && requestColumns.has('status')) {
     addFilter(conditions, values, 'spr.status = ?', params.status);
   }
 
-  if (params.supplier_id) {
+  if (params.supplier_id && requestColumns.has('supplier_id')) {
     const supplierId = normalizeNullableUuid(params.supplier_id, 'supplier_id');
-    values.push(supplierId, supplierId);
-    const firstIndex = values.length - 1;
-    const secondIndex = values.length;
-    conditions.push(`(
-      spr.supplier_id = $${firstIndex}::uuid
-      OR EXISTS (
+    values.push(supplierId);
+    const index = values.length;
+    const supplierConditions = ['spr.supplier_id = $' + index + '::uuid'];
+
+    if (hasSupplierLinks) {
+      supplierConditions.push(`EXISTS (
         SELECT 1
         FROM supplier_payment_request_suppliers sprs_filter
         WHERE sprs_filter.payment_request_id = spr.id
-          AND sprs_filter.supplier_id = $${secondIndex}::uuid
-      )
-    )`);
+          AND sprs_filter.supplier_id = $${index}::uuid
+      )`);
+    }
+
+    conditions.push(`(${supplierConditions.join(' OR ')})`);
   }
 
-  if (params.assigned_to) {
+  if (params.assigned_to && requestColumns.has('assigned_to')) {
     addFilter(conditions, values, 'spr.assigned_to ILIKE ?', `%${params.assigned_to}%`);
   }
 
-  if (params.date_from) {
+  if (params.date_from && requestColumns.has('created_at')) {
     addFilter(conditions, values, 'spr.created_at >= ?::timestamptz', params.date_from);
   }
 
-  if (params.date_to) {
+  if (params.date_to && requestColumns.has('created_at')) {
     addFilter(conditions, values, "spr.created_at < (?::date + INTERVAL '1 day')", params.date_to);
   }
 
@@ -240,39 +345,38 @@ function buildFilters(params = {}) {
   if (search) {
     values.push(`%${search}%`);
     const index = values.length;
-    conditions.push(`(
-      spr.request_number ILIKE $${index}
-      OR spr.reference_number ILIKE $${index}
-      OR spr.invoice_number ILIKE $${index}
-      OR spr.notes ILIKE $${index}
-      OR EXISTS (
+    const searchConditions = REQUEST_SEARCH_COLUMNS
+      .filter((column) => requestColumns.has(column))
+      .map((column) => `spr."${column}" ILIKE $${index}`);
+    const linkedSupplierSearch = supplierSearchSql('s_search', supplierColumns, index);
+    const primarySupplierSearch = supplierSearchSql('s_primary', supplierColumns, index);
+
+    if (hasSuppliersTable && hasSupplierLinks && linkedSupplierSearch.length > 0) {
+      searchConditions.push(`EXISTS (
         SELECT 1
         FROM supplier_payment_request_suppliers sprs_search
         JOIN suppliers s_search ON s_search.id = sprs_search.supplier_id
         WHERE sprs_search.payment_request_id = spr.id
-          AND (
-            s_search.name_ar ILIKE $${index}
-            OR s_search.name_en ILIKE $${index}
-            OR s_search.city ILIKE $${index}
-            OR s_search.category ILIKE $${index}
-          )
-      )
-      OR EXISTS (
+          AND (${linkedSupplierSearch.join(' OR ')})
+      )`);
+    }
+
+    if (hasSuppliersTable && primarySupplierSearch.length > 0) {
+      searchConditions.push(`EXISTS (
         SELECT 1
         FROM suppliers s_primary
         WHERE s_primary.id = spr.supplier_id
-          AND (
-            s_primary.name_ar ILIKE $${index}
-            OR s_primary.name_en ILIKE $${index}
-            OR s_primary.city ILIKE $${index}
-            OR s_primary.category ILIKE $${index}
-          )
-      )
-    )`);
+          AND (${primarySupplierSearch.join(' OR ')})
+      )`);
+    }
+
+    if (searchConditions.length > 0) {
+      conditions.push(`(${searchConditions.join(' OR ')})`);
+    }
   }
 
   return {
-    whereSql: `WHERE ${conditions.join(' AND ')}`,
+    whereSql: conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '',
     values
   };
 }
@@ -287,6 +391,144 @@ function limitOffset(params = {}, startIndex) {
     limit,
     offset
   };
+}
+
+function emptySummary() {
+  return {
+    total_requests: 0,
+    pending_requests: 0,
+    approved_requests: 0,
+    paid_requests: 0,
+    rejected_cancelled_requests: 0,
+    total_due_amount: 0,
+    total_paid_amount: 0
+  };
+}
+
+function normalizeSummary(row = {}) {
+  const summary = emptySummary();
+
+  for (const key of Object.keys(summary)) {
+    summary[key] = Number(row[key] || 0);
+  }
+
+  return summary;
+}
+
+function requestSelectSql(requestColumns) {
+  return SUPPLIER_PAYMENT_REQUEST_COLUMNS
+    .map((column) => {
+      const expression = selectColumn('spr', requestColumns, column, SUPPLIER_PAYMENT_REQUEST_COLUMN_TYPES[column] || 'text');
+      return `${expression} AS "${column}"`;
+    })
+    .join(', ');
+}
+
+function listOrderSql(requestColumns) {
+  const orderParts = [];
+
+  if (requestColumns.has('created_at')) {
+    orderParts.push('spr.created_at DESC');
+  }
+
+  if (requestColumns.has('request_number')) {
+    orderParts.push('spr.request_number DESC NULLS LAST');
+  }
+
+  if (requestColumns.has('id')) {
+    orderParts.push('spr.id DESC');
+  }
+
+  return orderParts.length > 0 ? `ORDER BY ${orderParts.join(', ')}` : '';
+}
+
+function summarySelectSql(requestColumns) {
+  const hasStatus = requestColumns.has('status');
+  const hasAmount = requestColumns.has('amount');
+  const pending = hasStatus
+    ? "(COUNT(*) FILTER (WHERE spr.status IN ('New', 'Under Review', 'Waiting Invoice', 'Waiting Approval')))::int"
+    : '0::int';
+  const approved = hasStatus ? "(COUNT(*) FILTER (WHERE spr.status = 'Approved'))::int" : '0::int';
+  const paid = hasStatus ? "(COUNT(*) FILTER (WHERE spr.status = 'Paid'))::int" : '0::int';
+  const rejectedCancelled = hasStatus
+    ? "(COUNT(*) FILTER (WHERE spr.status IN ('Rejected', 'Cancelled')))::int"
+    : '0::int';
+  const dueAmount = hasStatus && hasAmount
+    ? "COALESCE(SUM(spr.amount) FILTER (WHERE spr.status <> 'Paid' AND spr.status NOT IN ('Rejected', 'Cancelled')), 0)::float"
+    : '0::float';
+  const paidAmount = hasStatus && hasAmount
+    ? "COALESCE(SUM(spr.amount) FILTER (WHERE spr.status = 'Paid'), 0)::float"
+    : '0::float';
+
+  return `
+    COUNT(*)::int AS total_requests,
+    ${pending} AS pending_requests,
+    ${approved} AS approved_requests,
+    ${paid} AS paid_requests,
+    ${rejectedCancelled} AS rejected_cancelled_requests,
+    ${dueAmount} AS total_due_amount,
+    ${paidAmount} AS total_paid_amount
+  `;
+}
+
+async function supplierPaymentRequestSchema() {
+  const [requestColumns, supplierColumns, linkColumns, contactColumns] = await Promise.all([
+    tableColumns('supplier_payment_requests'),
+    tableColumns('suppliers'),
+    tableColumns('supplier_payment_request_suppliers'),
+    tableColumns('contacts')
+  ]);
+
+  return {
+    requestColumns,
+    supplierColumns,
+    linkColumns,
+    contactColumns
+  };
+}
+
+function isOptionalRelationError(error) {
+  return OPTIONAL_RELATION_ERROR_CODES.has(error.code);
+}
+
+function logOptionalRelationError(label, error) {
+  console.warn('Supplier payment request optional relation skipped:', {
+    relation: label,
+    message: error.message,
+    code: error.code,
+    detail: error.detail,
+    hint: error.hint,
+    table: error.table,
+    column: error.column
+  });
+}
+
+async function optionalRows(label, queryFn, fallbackQueryFn) {
+  try {
+    const result = await queryFn();
+    return result.rows || [];
+  } catch (error) {
+    if (isOptionalRelationError(error)) {
+      logOptionalRelationError(label, error);
+      if (fallbackQueryFn && error.code === '42703') {
+        try {
+          const fallbackResult = await fallbackQueryFn();
+          return fallbackResult.rows || [];
+        } catch (fallbackError) {
+          if (isOptionalRelationError(fallbackError)) {
+            logOptionalRelationError(`${label} fallback`, fallbackError);
+            return [];
+          }
+
+          throw fallbackError;
+        }
+      }
+
+      return [];
+    }
+
+    throw error;
+  }
 }
 
 async function generateRequestNumber(client) {
@@ -305,24 +547,38 @@ async function generateRequestNumber(client) {
 }
 
 async function addActivity(client, paymentRequestId, action, options = {}) {
+  const columns = await tableColumns('supplier_payment_request_activity_logs');
+  if (!hasColumns(columns, ['payment_request_id', 'action'])) {
+    console.warn('Supplier payment request activity log skipped: table or required columns are missing');
+    return;
+  }
+
+  const payload = {
+    payment_request_id: paymentRequestId,
+    action,
+    old_value: options.oldValue === undefined ? null : String(options.oldValue),
+    new_value: options.newValue === undefined ? null : String(options.newValue),
+    description: options.description || null,
+    created_by: UUID_PATTERN.test(String(options.userId || '')) ? options.userId : null
+  };
+  const insert = buildInsert(payloadForColumns(payload, columns));
+
   await client.query(
     `
-      INSERT INTO supplier_payment_request_activity_logs
-        (payment_request_id, action, old_value, new_value, description, created_by)
-      VALUES ($1, $2, $3, $4, $5, $6)
+      INSERT INTO supplier_payment_request_activity_logs (${insert.columns})
+      VALUES (${insert.placeholders})
     `,
-    [
-      paymentRequestId,
-      action,
-      options.oldValue === undefined ? null : String(options.oldValue),
-      options.newValue === undefined ? null : String(options.newValue),
-      options.description || null,
-      UUID_PATTERN.test(String(options.userId || '')) ? options.userId : null
-    ]
+    insert.values
   );
 }
 
 async function setSupplierLinks(client, paymentRequestId, supplierIds) {
+  const columns = await tableColumns('supplier_payment_request_suppliers');
+  if (!hasColumns(columns, ['payment_request_id', 'supplier_id'])) {
+    console.warn('Supplier payment request supplier links skipped: table or required columns are missing');
+    return;
+  }
+
   await client.query('DELETE FROM supplier_payment_request_suppliers WHERE payment_request_id = $1', [paymentRequestId]);
 
   if (!supplierIds || supplierIds.length === 0) {
@@ -346,58 +602,128 @@ async function setSupplierLinks(client, paymentRequestId, supplierIds) {
   );
 }
 
-async function suppliersForRequestIds(ids) {
+async function suppliersForRequestIds(ids, requests = [], schema = {}) {
   if (ids.length === 0) return new Map();
 
-  const result = await query(
+  const supplierColumns = schema.supplierColumns || await tableColumns('suppliers');
+  const contactColumns = schema.contactColumns || await tableColumns('contacts');
+  const linkColumns = schema.linkColumns || await tableColumns('supplier_payment_request_suppliers');
+  const linkRows = [];
+
+  for (const request of requests) {
+    if (request.id && request.supplier_id) {
+      linkRows.push({
+        request_id: request.id,
+        supplier_id: request.supplier_id
+      });
+    }
+  }
+
+  if (hasColumns(linkColumns, ['payment_request_id', 'supplier_id'])) {
+    linkRows.push(...await optionalRows('supplier_payment_request_suppliers', () => query(
+      `
+        SELECT
+          sprs.payment_request_id AS request_id,
+          sprs.supplier_id
+        FROM supplier_payment_request_suppliers sprs
+        WHERE sprs.payment_request_id = ANY($1::uuid[])
+          AND sprs.supplier_id IS NOT NULL
+      `,
+      [ids]
+    )));
+  }
+
+  if (linkRows.length === 0) {
+    return new Map();
+  }
+
+  const supplierIds = [...new Set(linkRows.map((row) => row.supplier_id).filter(Boolean))];
+  if (supplierIds.length === 0 || !supplierColumns.has('id')) {
+    return new Map();
+  }
+
+  const supplierSelect = SUPPLIER_RESPONSE_COLUMNS
+    .map((column) => `${selectColumn('s', supplierColumns, column)} AS ${column}`)
+    .join(',\n        ');
+  const supplierRows = await optionalRows('suppliers', () => query(
     `
       SELECT
-        sprs.payment_request_id,
         s.id,
-        s.name_ar,
-        s.name_en,
-        s.cr_number,
-        s.vat_number,
-        s.city,
-        s.category,
-        s.status,
-        array_remove(array_agg(DISTINCT c.phone), NULL) AS phones,
-        array_remove(array_agg(DISTINCT c.email), NULL) AS emails
-      FROM supplier_payment_request_suppliers sprs
-      JOIN suppliers s ON s.id = sprs.supplier_id
-      LEFT JOIN contacts c ON c.supplier_id = s.id
-      WHERE sprs.payment_request_id = ANY($1::uuid[])
-      GROUP BY sprs.payment_request_id, s.id
-      ORDER BY s.name_ar ASC NULLS LAST, s.name_en ASC NULLS LAST
+        ${supplierSelect}
+      FROM suppliers s
+      WHERE s.id = ANY($1::uuid[])
     `,
-    [ids]
-  );
+    [supplierIds]
+  ));
 
-  const map = new Map();
-  for (const row of result.rows) {
-    if (!map.has(row.payment_request_id)) {
-      map.set(row.payment_request_id, []);
+  const contacts = hasColumns(contactColumns, ['supplier_id'])
+    ? await optionalRows('contacts', () => query(
+      `
+        SELECT
+          supplier_id,
+          ${selectColumn('contacts', contactColumns, 'phone')} AS phone,
+          ${selectColumn('contacts', contactColumns, 'email')} AS email
+        FROM contacts
+        WHERE supplier_id = ANY($1::uuid[])
+      `,
+      [supplierIds]
+    ))
+    : [];
+
+  const contactsBySupplier = new Map();
+  for (const contact of contacts) {
+    if (!contact.supplier_id) continue;
+    if (!contactsBySupplier.has(contact.supplier_id)) {
+      contactsBySupplier.set(contact.supplier_id, { phones: new Set(), emails: new Set() });
     }
 
-    map.get(row.payment_request_id).push({
-      id: row.id,
-      name_ar: row.name_ar,
-      name_en: row.name_en,
-      cr_number: row.cr_number,
-      vat_number: row.vat_number,
-      city: row.city,
-      category: row.category,
-      status: row.status,
-      phones: row.phones || [],
-      emails: row.emails || []
-    });
+    const entry = contactsBySupplier.get(contact.supplier_id);
+    if (contact.phone) entry.phones.add(contact.phone);
+    if (contact.email) entry.emails.add(contact.email);
+  }
+
+  const suppliersById = new Map(supplierRows.map((supplier) => {
+    const contact = contactsBySupplier.get(supplier.id);
+    return [supplier.id, {
+      id: supplier.id,
+      name_ar: supplier.name_ar || null,
+      name_en: supplier.name_en || supplier.name || null,
+      cr_number: supplier.cr_number || null,
+      vat_number: supplier.vat_number || null,
+      city: supplier.city || null,
+      category: supplier.category || null,
+      status: supplier.status || null,
+      phones: contact ? [...contact.phones] : [],
+      emails: contact ? [...contact.emails] : []
+    }];
+  }));
+
+  const map = new Map();
+  const seen = new Map();
+  for (const row of linkRows) {
+    const supplier = suppliersById.get(row.supplier_id);
+    if (!row.request_id || !supplier) continue;
+
+    if (!map.has(row.request_id)) {
+      map.set(row.request_id, []);
+      seen.set(row.request_id, new Set());
+    }
+
+    if (seen.get(row.request_id).has(supplier.id)) continue;
+
+    map.get(row.request_id).push(supplier);
+    seen.get(row.request_id).add(supplier.id);
+  }
+
+  for (const suppliers of map.values()) {
+    suppliers.sort((a, b) => (a.name_ar || a.name_en || a.id).localeCompare(b.name_ar || b.name_en || b.id));
   }
 
   return map;
 }
 
-async function attachSuppliers(requests) {
-  const map = await suppliersForRequestIds(requests.map((request) => request.id));
+async function attachSuppliers(requests, schema = {}) {
+  const map = await suppliersForRequestIds(requests.map((request) => request.id), requests, schema);
   return requests.map((request) => ({
     ...request,
     suppliers: map.get(request.id) || []
@@ -405,61 +731,78 @@ async function attachSuppliers(requests) {
 }
 
 async function list(params = {}) {
-  const filters = buildFilters(params);
-  const paging = limitOffset(params, filters.values.length + 1);
+  try {
+    const schema = await supplierPaymentRequestSchema();
+    const missingColumns = SUPPLIER_PAYMENT_REQUEST_COLUMNS.filter((column) => !schema.requestColumns.has(column));
+    if (missingColumns.length > 0) {
+      console.warn('supplier_payment_requests is missing migration columns; list will return nulls for absent fields:', missingColumns);
+    }
 
-  const [rowsResult, countResult, summaryResult] = await Promise.all([
-    query(
-      `
-        SELECT spr.*
-        FROM supplier_payment_requests spr
-        ${filters.whereSql}
-        ORDER BY spr.created_at DESC, spr.request_number DESC NULLS LAST
-        ${paging.sql}
-      `,
-      [...filters.values, ...paging.values]
-    ),
-    query(
-      `
-        SELECT COUNT(*)::int AS total
-        FROM supplier_payment_requests spr
-        ${filters.whereSql}
-      `,
-      filters.values
-    ),
-    query(
-      `
-        SELECT
-          COUNT(*)::int AS total_requests,
-          (COUNT(*) FILTER (WHERE status IN ('New', 'Under Review', 'Waiting Invoice', 'Waiting Approval')))::int AS pending_requests,
-          (COUNT(*) FILTER (WHERE status = 'Approved'))::int AS approved_requests,
-          (COUNT(*) FILTER (WHERE status = 'Paid'))::int AS paid_requests,
-          (COUNT(*) FILTER (WHERE status IN ('Rejected', 'Cancelled')))::int AS rejected_cancelled_requests,
-          COALESCE(SUM(amount) FILTER (WHERE status <> 'Paid' AND status NOT IN ('Rejected', 'Cancelled')), 0)::float AS outstanding_amount,
-          COALESCE(SUM(amount) FILTER (WHERE status <> 'Paid' AND status NOT IN ('Rejected', 'Cancelled')), 0)::float AS total_due_amount,
-          COALESCE(SUM(amount) FILTER (WHERE status = 'Paid'), 0)::float AS paid_amount,
-          COALESCE(SUM(amount) FILTER (WHERE status = 'Paid'), 0)::float AS total_paid_amount
-        FROM supplier_payment_requests spr
-        ${filters.whereSql}
-      `,
-      filters.values
-    )
-  ]);
+    const filters = buildFilters(params, schema);
+    const paging = limitOffset(params, filters.values.length + 1);
+    const selectColumns = requestSelectSql(schema.requestColumns);
+    const orderSql = listOrderSql(schema.requestColumns);
+    const summarySql = summarySelectSql(schema.requestColumns);
 
-  return {
-    data: await attachSuppliers(rowsResult.rows),
-    meta: {
-      total: countResult.rows[0]?.total || 0,
-      limit: paging.limit,
-      offset: paging.offset
-    },
-    summary: summaryResult.rows[0] || {}
-  };
+    const [rowsResult, countResult, summaryResult] = await Promise.all([
+      query(
+        `
+          SELECT ${selectColumns}
+          FROM supplier_payment_requests spr
+          ${filters.whereSql}
+          ${orderSql}
+          ${paging.sql}
+        `,
+        [...filters.values, ...paging.values]
+      ),
+      query(
+        `
+          SELECT COUNT(*)::int AS total
+          FROM supplier_payment_requests spr
+          ${filters.whereSql}
+        `,
+        filters.values
+      ),
+      query(
+        `
+          SELECT
+            ${summarySql}
+          FROM supplier_payment_requests spr
+          ${filters.whereSql}
+        `,
+        filters.values
+      )
+    ]);
+
+    return {
+      data: await attachSuppliers(rowsResult.rows, schema),
+      meta: {
+        total: countResult.rows[0]?.total || 0,
+        limit: paging.limit,
+        offset: paging.offset
+      },
+      summary: normalizeSummary(summaryResult.rows[0])
+    };
+  } catch (error) {
+    logServiceError('list', error, { params });
+    throw error;
+  }
 }
 
 async function getById(id) {
   const requestId = requireUuid(id, 'id');
-  const result = await query('SELECT * FROM supplier_payment_requests WHERE id = $1 AND deleted_at IS NULL', [requestId]);
+  const schema = await supplierPaymentRequestSchema();
+  const selectColumns = requestSelectSql(schema.requestColumns);
+  const deletedFilter = schema.requestColumns.has('deleted_at') ? 'AND spr.deleted_at IS NULL' : '';
+  const result = await query(
+    `
+      SELECT ${selectColumns}
+      FROM supplier_payment_requests spr
+      WHERE spr.id = $1
+      ${deletedFilter}
+    `,
+    [requestId]
+  );
   const paymentRequest = result.rows[0];
 
   if (!paymentRequest) {
@@ -467,7 +810,7 @@ async function getById(id) {
   }
 
   const [withSuppliers, documents, activity_logs] = await Promise.all([
-    attachSuppliers([paymentRequest]).then(([row]) => row),
+    attachSuppliers([paymentRequest], schema).then(([row]) => row),
     listDocuments(requestId),
     listActivityLogs(requestId)
   ]);
@@ -476,6 +819,7 @@ async function getById(id) {
 }
 
 async function create(data = {}, userId) {
+  const schema = await supplierPaymentRequestSchema();
   const supplierIds = normalizeSupplierIds(data);
   const payload = preparePayload(data);
 
@@ -485,15 +829,19 @@ async function create(data = {}, userId) {
 
   payload.status = payload.status || 'New';
   payload.priority = payload.priority || 'Normal';
-  payload.supplier_id = payload.supplier_id || supplierIds[0] || null;
-  payload.created_by = UUID_PATTERN.test(String(userId || '')) ? userId : null;
+  if (schema.requestColumns.has('supplier_id')) {
+    payload.supplier_id = payload.supplier_id || supplierIds[0] || null;
+  }
+  if (schema.requestColumns.has('created_by')) {
+    payload.created_by = UUID_PATTERN.test(String(userId || '')) ? userId : null;
+  }
 
   const row = await withTransaction(async (client) => {
-    if (!payload.request_number) {
+    if (schema.requestColumns.has('request_number') && !payload.request_number) {
       payload.request_number = await generateRequestNumber(client);
     }
 
-    const insert = buildInsert(payload);
+    const insert = buildInsert(payloadForColumns(payload, schema.requestColumns));
     const result = await client.query(
       `
         INSERT INTO supplier_payment_requests (${insert.columns})
@@ -518,27 +866,31 @@ async function create(data = {}, userId) {
 
 async function update(id, data = {}, userId) {
   const requestId = requireUuid(id, 'id');
+  const schema = await supplierPaymentRequestSchema();
   const existing = await getById(requestId);
   const supplierIdsProvided = Object.prototype.hasOwnProperty.call(data, 'supplier_ids') || Object.prototype.hasOwnProperty.call(data, 'supplierIds');
   const supplierIds = supplierIdsProvided ? normalizeSupplierIds(data) : undefined;
   const payload = preparePayload(data);
 
-  if (supplierIds && !Object.prototype.hasOwnProperty.call(payload, 'supplier_id')) {
+  if (supplierIds && schema.requestColumns.has('supplier_id') && !Object.prototype.hasOwnProperty.call(payload, 'supplier_id')) {
     payload.supplier_id = supplierIds[0] || null;
   }
 
-  if (Object.keys(payload).length === 0 && supplierIds === undefined) {
+  const updatePayload = payloadForColumns(payload, schema.requestColumns);
+
+  if (Object.keys(updatePayload).length === 0 && supplierIds === undefined) {
     throw createHttpError(400, 'No valid fields were provided');
   }
 
   await withTransaction(async (client) => {
-    if (Object.keys(payload).length > 0) {
-      const updateSql = buildUpdate(payload);
+    if (Object.keys(updatePayload).length > 0) {
+      const updateSql = buildUpdate(updatePayload);
+      const deletedFilter = schema.requestColumns.has('deleted_at') ? 'AND deleted_at IS NULL' : '';
       const result = await client.query(
         `
           UPDATE supplier_payment_requests
           SET ${updateSql.assignments.join(', ')}, updated_at = now()
-          WHERE id = $1 AND deleted_at IS NULL
+          WHERE id = $1 ${deletedFilter}
           RETURNING *
         `,
         [requestId, ...updateSql.values]
@@ -582,16 +934,26 @@ async function update(id, data = {}, userId) {
 
 async function remove(id, userId) {
   const requestId = requireUuid(id, 'id');
+  const schema = await supplierPaymentRequestSchema();
   const row = await withTransaction(async (client) => {
-    const result = await client.query(
-      `
-        UPDATE supplier_payment_requests
-        SET deleted_at = now(), updated_at = now()
-        WHERE id = $1 AND deleted_at IS NULL
-        RETURNING *
-      `,
-      [requestId]
-    );
+    const result = schema.requestColumns.has('deleted_at')
+      ? await client.query(
+        `
+          UPDATE supplier_payment_requests
+          SET deleted_at = now(), updated_at = now()
+          WHERE id = $1 AND deleted_at IS NULL
+          RETURNING *
+        `,
+        [requestId]
+      )
+      : await client.query(
+        `
+          DELETE FROM supplier_payment_requests
+          WHERE id = $1
+          RETURNING *
+        `,
+        [requestId]
+      );
 
     if (!result.rows[0]) {
       throw createHttpError(404, 'Supplier payment request not found');
@@ -611,7 +973,7 @@ async function remove(id, userId) {
 
 async function listDocuments(paymentRequestId) {
   const requestId = requireUuid(paymentRequestId, 'payment_request_id');
-  const result = await query(
+  return optionalRows('supplier_payment_request_documents', () => query(
     `
       SELECT *
       FROM supplier_payment_request_documents
@@ -619,9 +981,14 @@ async function listDocuments(paymentRequestId) {
       ORDER BY created_at DESC
     `,
     [requestId]
-  );
-
-  return result.rows;
+  ), () => query(
+    `
+      SELECT *
+      FROM supplier_payment_request_documents
+      WHERE payment_request_id = $1
+    `,
+    [requestId]
+  ));
 }
 
 async function uploadDocument(paymentRequestId, file, data, userId) {
@@ -716,7 +1083,7 @@ async function deleteDocument(paymentRequestId, documentId, userId) {
 
 async function listActivityLogs(paymentRequestId) {
   const requestId = requireUuid(paymentRequestId, 'payment_request_id');
-  const result = await query(
+  return optionalRows('supplier_payment_request_activity_logs', () => query(
     `
       SELECT *
       FROM supplier_payment_request_activity_logs
@@ -724,9 +1091,14 @@ async function listActivityLogs(paymentRequestId) {
       ORDER BY created_at DESC
     `,
     [requestId]
-  );
-
-  return result.rows;
+  ), () => query(
+    `
+      SELECT *
+      FROM supplier_payment_request_activity_logs
+      WHERE payment_request_id = $1
+    `,
+    [requestId]
+  ));
 }
 
 module.exports = {

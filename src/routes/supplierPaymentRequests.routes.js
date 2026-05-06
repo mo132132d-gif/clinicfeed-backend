@@ -9,12 +9,33 @@ const router = express.Router();
 
 router.use(authenticate);
 
+function logSupplierPaymentRouteError(label, error, req) {
+  console.error(`${label} failed:`, {
+    path: req.originalUrl,
+    params: req.params,
+    query: req.query,
+    message: error.message,
+    stack: error.stack,
+    code: error.code,
+    detail: error.detail,
+    hint: error.hint,
+    table: error.table,
+    column: error.column,
+    constraint: error.constraint
+  });
+}
+
 router.get(
   '/',
   authorize('supplier_payment_requests:read'),
   asyncHandler(async (req, res) => {
-    const data = await supplierPaymentRequestsService.list(req.query);
-    res.json(data);
+    try {
+      const data = await supplierPaymentRequestsService.list(req.query);
+      res.json(data);
+    } catch (error) {
+      logSupplierPaymentRouteError('GET /api/supplier-payment-requests', error, req);
+      throw error;
+    }
   })
 );
 
@@ -22,8 +43,13 @@ router.get(
   '/:id',
   authorize('supplier_payment_requests:read'),
   asyncHandler(async (req, res) => {
-    const data = await supplierPaymentRequestsService.getById(req.params.id);
-    res.json({ data });
+    try {
+      const data = await supplierPaymentRequestsService.getById(req.params.id);
+      res.json({ data });
+    } catch (error) {
+      logSupplierPaymentRouteError('GET /api/supplier-payment-requests/:id', error, req);
+      throw error;
+    }
   })
 );
 
