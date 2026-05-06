@@ -91,8 +91,49 @@ function preparePayload(data, fields) {
   const payload = filteredPayload(data, fields);
 
   if (Object.prototype.hasOwnProperty.call(payload, 'status')) {
-    const normalized = normalizeTicketStatus(payload.status);
-    payload.status = normalized || String(payload.status).trim();
+    const statusValue = String(payload.status || '').trim();
+
+    const statusMap = {
+      new: 'new',
+      pending: 'new',
+      active: 'new',
+      'جديد': 'new',
+      'معلق': 'new',
+
+      under_review: 'under_review',
+      'قيد المراجعة': 'under_review',
+
+      waiting_customer: 'waiting_customer',
+      'بأنتظار العميل': 'waiting_customer',
+      'بانتظار العميل': 'waiting_customer',
+      'بإنتظار العميل': 'waiting_customer',
+
+      waiting_supplier: 'waiting_supplier',
+      'بأنتظار المورد': 'waiting_supplier',
+      'بانتظار المورد': 'waiting_supplier',
+      'بإنتظار المورد': 'waiting_supplier',
+
+      quotation_sent: 'quotation_sent',
+      'تم ارسال عرض سعر': 'quotation_sent',
+      'تم إرسال عرض سعر': 'quotation_sent',
+
+      in_progress: 'in_progress',
+      'قيد التنفيذ': 'in_progress',
+
+      completed: 'completed',
+      executed: 'completed',
+      'منفذة': 'completed',
+      'منفذ': 'completed',
+      'تم التنفيذ': 'completed',
+
+      cancelled: 'cancelled',
+      canceled: 'cancelled',
+      'ملغية': 'cancelled',
+      'ملغي': 'cancelled',
+      'ملغى': 'cancelled',
+    };
+
+    payload.status = statusMap[statusValue] || statusValue;
   }
 
   if (Object.prototype.hasOwnProperty.call(payload, 'order_amount')) {
