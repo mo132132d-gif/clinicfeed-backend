@@ -91,7 +91,8 @@ function preparePayload(data, fields) {
   const payload = filteredPayload(data, fields);
 
   if (Object.prototype.hasOwnProperty.call(payload, 'status')) {
-    payload.status = String(payload.status).trim();
+    const normalized = normalizeTicketStatus(payload.status);
+    payload.status = normalized || String(payload.status).trim();
   }
 
   if (Object.prototype.hasOwnProperty.call(payload, 'order_amount')) {
