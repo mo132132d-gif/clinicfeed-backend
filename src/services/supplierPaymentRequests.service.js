@@ -208,33 +208,47 @@ function normalizeSupplierIds(data) {
   const value = data.supplier_ids ?? data.supplierIds;
   const ids = [];
 
+  function addId(id, fieldName) {
+    const normalized = normalizeNullableUuid(id, fieldName);
+    if (normalized) {
+      ids.push(normalized);
+    }
+  }
+
   if (Array.isArray(value)) {
-    ids.push(...value);
+    for (const id of value) {
+      addId(id, 'supplier_ids');
+    }
   } else if (typeof value === 'string') {
     const trimmed = value.trim();
     if (trimmed) {
       try {
         const parsed = JSON.parse(trimmed);
         if (Array.isArray(parsed)) {
-          ids.push(...parsed);
+          for (const id of parsed) {
+            addId(id, 'supplier_ids');
+          }
         } else {
-          ids.push(...trimmed.split(','));
+          addId(parsed, 'supplier_ids');
         }
       } catch {
-        ids.push(...trimmed.split(','));
+        for (const id of trimmed.split(',')) {
+          addId(id, 'supplier_ids');
+        }
       }
+    }
+  } else if (value !== undefined && value !== null) {
+    addId(value, 'supplier_ids');
+  }
+
+  if (Object.prototype.hasOwnProperty.call(data, 'supplier_id')) {
+    const supplierId = normalizeNullableUuid(data.supplier_id, 'supplier_id');
+    if (supplierId) {
+      ids.unshift(supplierId);
     }
   }
 
-  if (data.supplier_id) {
-    ids.unshift(data.supplier_id);
-  }
-
-  const normalizedIds = ids
-    .map((id) => normalizeNullableUuid(id, 'supplier_ids'))
-    .filter(Boolean);
-
-  return [...new Set(normalizedIds)];
+  return [...new Set(ids)];
 }
 
 function preparePayload(data) {
@@ -533,17 +547,58 @@ async function optionalRows(label, queryFn, fallbackQueryFn) {
 
 async function generateRequestNumber(client) {
   const datePart = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  await client.query("SELECT pg_advisory_xact_lock(hashtext('supplier_payment_requests_request_number'))");
-  const result = await client.query(
-    `
-      SELECT COALESCE(MAX(substring(request_number from 'SPR-[0-9]{8}-([0-9]{4})$')::int), 0) + 1 AS next_number
-      FROM supplier_payment_requests
-      WHERE request_number LIKE $1
-    `,
-    [`SPR-${datePart}-%`]
-  );
+  const pattern = `^SPR-${datePart}-([0-9]{4,})$`;
 
-  return `SPR-${datePart}-${String(result.rows[0].next_number).padStart(4, '0')}`;
+  try {
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('supplier_payment_requests_request_number'))");
+    const result = await client.query(
+      `
+        SELECT COALESCE(
+          MAX(
+            CASE
+              WHEN request_number ~ $2 THEN substring(request_number from $2)::int
+              ELSE 0
+            END
+          ),
+          0
+        ) + 1 AS next_number
+        FROM supplier_payment_requests
+        WHERE request_number LIKE $1
+      `,
+      [`SPR-${datePart}-%`, pattern]
+    );
+
+    return `SPR-${datePart}-${String(result.rows[0].next_number).padStart(4, '0')}`;
+  } catch (error) {
+    console.error('Supplier payment requests service request number generation failed:', {
+      message: error.message,
+      stack: error.stack,
+      code: error.code,
+      detail: error.detail,
+      hint: error.hint
+    });
+
+    return `SPR-${datePart}-${Date.now()}`;
+  }
+}
+
+async function existingUserId(client, userId) {
+  const normalized = UUID_PATTERN.test(String(userId || '')) ? String(userId) : null;
+  if (!normalized) {
+    return null;
+  }
+
+  try {
+    const result = await client.query('SELECT id FROM users WHERE id = $1 LIMIT 1', [normalized]);
+    return result.rows[0]?.id || null;
+  } catch (error) {
+    if (isOptionalRelationError(error)) {
+      logOptionalRelationError('users', error);
+      return null;
+    }
+
+    throw error;
+  }
 }
 
 async function addActivity(client, paymentRequestId, action, options = {}) {
@@ -819,49 +874,68 @@ async function getById(id) {
 }
 
 async function create(data = {}, userId) {
-  const schema = await supplierPaymentRequestSchema();
-  const supplierIds = normalizeSupplierIds(data);
-  const payload = preparePayload(data);
+  try {
+    const schema = await supplierPaymentRequestSchema();
+    const supplierIds = normalizeSupplierIds(data);
+    const payload = preparePayload(data);
 
-  if (!Object.prototype.hasOwnProperty.call(payload, 'amount')) {
-    throw createHttpError(400, 'amount is required and must be greater than 0');
-  }
-
-  payload.status = payload.status || 'New';
-  payload.priority = payload.priority || 'Normal';
-  if (schema.requestColumns.has('supplier_id')) {
-    payload.supplier_id = payload.supplier_id || supplierIds[0] || null;
-  }
-  if (schema.requestColumns.has('created_by')) {
-    payload.created_by = UUID_PATTERN.test(String(userId || '')) ? userId : null;
-  }
-
-  const row = await withTransaction(async (client) => {
-    if (schema.requestColumns.has('request_number') && !payload.request_number) {
-      payload.request_number = await generateRequestNumber(client);
+    if (!Object.prototype.hasOwnProperty.call(payload, 'amount')) {
+      throw createHttpError(400, 'amount is required and must be greater than 0');
     }
 
-    const insert = buildInsert(payloadForColumns(payload, schema.requestColumns));
-    const result = await client.query(
-      `
-        INSERT INTO supplier_payment_requests (${insert.columns})
-        VALUES (${insert.placeholders})
-        RETURNING *
-      `,
-      insert.values
-    );
+    if (supplierIds.length === 0) {
+      throw createHttpError(400, 'supplier_id or supplier_ids is required');
+    }
 
-    await setSupplierLinks(client, result.rows[0].id, supplierIds);
-    await addActivity(client, result.rows[0].id, 'created', {
-      newValue: result.rows[0].request_number,
-      description: 'Supplier payment request created',
-      userId
+    payload.status = payload.status || 'New';
+    payload.priority = payload.priority || 'Normal';
+    if (schema.requestColumns.has('supplier_id')) {
+      payload.supplier_id = supplierIds[0];
+    }
+
+    const row = await withTransaction(async (client) => {
+      if (schema.requestColumns.has('created_by')) {
+        const createdBy = await existingUserId(client, userId);
+        if (createdBy) {
+          payload.created_by = createdBy;
+        }
+      }
+
+      if (schema.requestColumns.has('request_number') && !payload.request_number) {
+        payload.request_number = await generateRequestNumber(client);
+      }
+
+      const insertPayload = payloadForColumns(payload, schema.requestColumns);
+      const insert = buildInsert(insertPayload);
+      const result = await client.query(
+        `
+          INSERT INTO supplier_payment_requests (${insert.columns})
+          VALUES (${insert.placeholders})
+          RETURNING *
+        `,
+        insert.values
+      );
+
+      await setSupplierLinks(client, result.rows[0].id, supplierIds);
+      await addActivity(client, result.rows[0].id, 'created', {
+        newValue: result.rows[0].request_number,
+        description: 'Supplier payment request created',
+        userId: insertPayload.created_by
+      });
+
+      return result.rows[0];
     });
 
-    return result.rows[0];
-  });
-
-  return getById(row.id);
+    return getById(row.id);
+  } catch (error) {
+    logServiceError('create', error, {
+      supplier_id: data?.supplier_id,
+      supplier_ids_type: Array.isArray(data?.supplier_ids) ? 'array' : typeof data?.supplier_ids,
+      has_amount: Object.prototype.hasOwnProperty.call(data || {}, 'amount'),
+      user_id_present: Boolean(userId)
+    });
+    throw error;
+  }
 }
 
 async function update(id, data = {}, userId) {

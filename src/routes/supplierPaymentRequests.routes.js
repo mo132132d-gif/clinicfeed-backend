@@ -57,8 +57,13 @@ router.post(
   '/',
   authorize('supplier_payment_requests:write'),
   asyncHandler(async (req, res) => {
-    const data = await supplierPaymentRequestsService.create(req.body, req.user?.id);
-    res.status(201).json({ data });
+    try {
+      const data = await supplierPaymentRequestsService.create(req.body, req.user?.id);
+      res.status(201).json({ data });
+    } catch (error) {
+      logSupplierPaymentRouteError('POST /api/supplier-payment-requests', error, req);
+      throw error;
+    }
   })
 );
 
