@@ -304,12 +304,58 @@ async function suppliersForTicketIds(ticketIds) {
   return byTicket;
 }
 
+
+async function attachmentsForTicketIds(ticketIds) {
+  if (!ticketIds || ticketIds.length === 0) {
+    return new Map();
+  }
+
+  const result = await query(
+    `
+      SELECT
+        id,
+        ticket_id,
+        attachment_type,
+        file_name,
+        file_url,
+        file_path,
+        file_mime_type,
+        file_size,
+        uploaded_by,
+        created_at
+      FROM request_ticket_attachments
+      WHERE ticket_id = ANY($1::uuid[])
+      ORDER BY created_at DESC
+    `,
+    [ticketIds]
+  );
+
+  const byTicket = new Map();
+
+  for (const attachment of result.rows) {
+    if (!byTicket.has(attachment.ticket_id)) {
+      byTicket.set(attachment.ticket_id, []);
+    }
+
+    byTicket.get(attachment.ticket_id).push(attachment);
+  }
+
+  return byTicket;
+}
+
 async function attachSuppliers(tickets) {
-  const supplierMap = await suppliersForTicketIds(tickets.map((ticket) => ticket.id));
+  const ticketIds = tickets.map((ticket) => ticket.id);
+
+  const [supplierMap, attachmentMap] = await Promise.all([
+    suppliersForTicketIds(ticketIds),
+    attachmentsForTicketIds(ticketIds)
+  ]);
+
   return tickets.map((ticket) => ({
     ...ticket,
     normalized_status: normalizeTicketStatus(ticket.status) || 'pending',
-    suppliers: supplierMap.get(ticket.id) || []
+    suppliers: supplierMap.get(ticket.id) || [],
+    attachments: attachmentMap.get(ticket.id) || []
   }));
 }
 
@@ -707,4 +753,7 @@ module.exports = {
   exportWorkbook,
   uploadAttachment
 };
+
+
+
 
