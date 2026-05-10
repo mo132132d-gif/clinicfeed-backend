@@ -132,7 +132,7 @@ function preparePayload(data, fields) {
       canceled: 'cancelled',
       'ظ…ظ„ط؛ظٹط©': 'cancelled',
       'ظ…ظ„ط؛ظٹ': 'cancelled',
-      'ظ…ظ„ط؛ظ‰': 'cancelled',
+      'ظ…ظ„ط؛ظ‰': 'cancelled'
     };
 
     payload.status = statusMap[statusValue] || statusValue;
@@ -303,7 +303,6 @@ async function suppliersForTicketIds(ticketIds) {
 
   return byTicket;
 }
-
 
 async function attachmentsForTicketIds(ticketIds) {
   if (!ticketIds || ticketIds.length === 0) {
@@ -665,7 +664,6 @@ async function exportWorkbook(queryParams = {}) {
   return workbook.xlsx.writeBuffer();
 }
 
-
 async function uploadAttachment(ticketId, file, data = {}, userId = null) {
   if (!ticketId) {
     throw createHttpError(400, 'Ticket id is required');
@@ -684,9 +682,40 @@ async function uploadAttachment(ticketId, file, data = {}, userId = null) {
     throw createHttpError(404, 'Request ticket not found');
   }
 
-  const safeOriginalName = String(file.originalname || 'attachment')
+  const mimeExtensionMap = {
+    'image/jpeg': '.jpg',
+    'image/jpg': '.jpg',
+    'image/png': '.png',
+    'image/webp': '.webp',
+    'image/gif': '.gif',
+    'image/bmp': '.bmp',
+    'image/tiff': '.tiff',
+    'application/pdf': '.pdf',
+    'text/plain': '.txt',
+    'text/csv': '.csv',
+    'application/json': '.json',
+    'application/msword': '.doc',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+    'application/vnd.ms-excel': '.xls',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+    'application/vnd.ms-powerpoint': '.ppt',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx'
+  };
+
+  let safeOriginalName = String(file.originalname || 'attachment')
     .replace(/[^\w.\-\u0600-\u06FF ]+/g, '')
     .replace(/\s+/g, '_');
+
+  if (!safeOriginalName || safeOriginalName === '.') {
+    safeOriginalName = 'attachment';
+  }
+
+  const hasExtension = /\.[A-Za-z0-9]{2,8}$/.test(safeOriginalName);
+  const inferredExtension = mimeExtensionMap[file.mimetype] || '';
+
+  if (!hasExtension && inferredExtension) {
+    safeOriginalName = `${safeOriginalName}${inferredExtension}`;
+  }
 
   const storedFileName = `${Date.now()}-${safeOriginalName}`;
   const relativeDir = path.join('request-tickets', String(ticketId));
@@ -728,7 +757,7 @@ async function uploadAttachment(ticketId, file, data = {}, userId = null) {
     [
       ticketId,
       attachmentType,
-      file.originalname || storedFileName,
+      safeOriginalName,
       fileUrl,
       path.join('uploads', relativePath).replace(/\\/g, '/'),
       file.mimetype || null,
@@ -753,7 +782,3 @@ module.exports = {
   exportWorkbook,
   uploadAttachment
 };
-
-
-
-
