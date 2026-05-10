@@ -1,4 +1,6 @@
-const ExcelJS = require('exceljs');
+﻿const ExcelJS = require('exceljs');
+const fs = require('fs/promises');
+const path = require('path');
 const { query } = require('../db/query');
 const { withTransaction } = require('../db/transaction');
 const { createHttpError } = require('../utils/httpError');
@@ -30,10 +32,10 @@ function statusBucketSql(alias = 'rt') {
   return `
     CASE
       WHEN lower(${alias}.status) IN ('completed', 'executed', 'done', 'success', 'fulfilled')
-        OR ${alias}.status IN ('منفذ', 'مكتمل', 'تم التنفيذ')
+        OR ${alias}.status IN ('ظ…ظ†ظپط°', 'ظ…ظƒطھظ…ظ„', 'طھظ… ط§ظ„طھظ†ظپظٹط°')
         THEN 'completed'
       WHEN lower(${alias}.status) IN ('cancelled', 'canceled', 'rejected', 'failed')
-        OR ${alias}.status IN ('ملغي', 'ملغى', 'مرفوض')
+        OR ${alias}.status IN ('ظ…ظ„ط؛ظٹ', 'ظ…ظ„ط؛ظ‰', 'ظ…ط±ظپظˆط¶')
         THEN 'cancelled'
       ELSE 'pending'
     END
@@ -97,40 +99,40 @@ function preparePayload(data, fields) {
       new: 'new',
       pending: 'new',
       active: 'new',
-      'جديد': 'new',
-      'معلق': 'new',
+      'ط¬ط¯ظٹط¯': 'new',
+      'ظ…ط¹ظ„ظ‚': 'new',
 
       under_review: 'under_review',
-      'قيد المراجعة': 'under_review',
+      'ظ‚ظٹط¯ ط§ظ„ظ…ط±ط§ط¬ط¹ط©': 'under_review',
 
       waiting_customer: 'waiting_customer',
-      'بأنتظار العميل': 'waiting_customer',
-      'بانتظار العميل': 'waiting_customer',
-      'بإنتظار العميل': 'waiting_customer',
+      'ط¨ط£ظ†طھط¸ط§ط± ط§ظ„ط¹ظ…ظٹظ„': 'waiting_customer',
+      'ط¨ط§ظ†طھط¸ط§ط± ط§ظ„ط¹ظ…ظٹظ„': 'waiting_customer',
+      'ط¨ط¥ظ†طھط¸ط§ط± ط§ظ„ط¹ظ…ظٹظ„': 'waiting_customer',
 
       waiting_supplier: 'waiting_supplier',
-      'بأنتظار المورد': 'waiting_supplier',
-      'بانتظار المورد': 'waiting_supplier',
-      'بإنتظار المورد': 'waiting_supplier',
+      'ط¨ط£ظ†طھط¸ط§ط± ط§ظ„ظ…ظˆط±ط¯': 'waiting_supplier',
+      'ط¨ط§ظ†طھط¸ط§ط± ط§ظ„ظ…ظˆط±ط¯': 'waiting_supplier',
+      'ط¨ط¥ظ†طھط¸ط§ط± ط§ظ„ظ…ظˆط±ط¯': 'waiting_supplier',
 
       quotation_sent: 'quotation_sent',
-      'تم ارسال عرض سعر': 'quotation_sent',
-      'تم إرسال عرض سعر': 'quotation_sent',
+      'طھظ… ط§ط±ط³ط§ظ„ ط¹ط±ط¶ ط³ط¹ط±': 'quotation_sent',
+      'طھظ… ط¥ط±ط³ط§ظ„ ط¹ط±ط¶ ط³ط¹ط±': 'quotation_sent',
 
       in_progress: 'in_progress',
-      'قيد التنفيذ': 'in_progress',
+      'ظ‚ظٹط¯ ط§ظ„طھظ†ظپظٹط°': 'in_progress',
 
       completed: 'completed',
       executed: 'completed',
-      'منفذة': 'completed',
-      'منفذ': 'completed',
-      'تم التنفيذ': 'completed',
+      'ظ…ظ†ظپط°ط©': 'completed',
+      'ظ…ظ†ظپط°': 'completed',
+      'طھظ… ط§ظ„طھظ†ظپظٹط°': 'completed',
 
       cancelled: 'cancelled',
       canceled: 'cancelled',
-      'ملغية': 'cancelled',
-      'ملغي': 'cancelled',
-      'ملغى': 'cancelled',
+      'ظ…ظ„ط؛ظٹط©': 'cancelled',
+      'ظ…ظ„ط؛ظٹ': 'cancelled',
+      'ظ…ظ„ط؛ظ‰': 'cancelled',
     };
 
     payload.status = statusMap[statusValue] || statusValue;
@@ -516,28 +518,28 @@ async function exportWorkbook(queryParams = {}) {
   workbook.creator = 'ClinicFeed';
   workbook.created = new Date();
 
-  const worksheet = workbook.addWorksheet('طلبات العملاء', {
+  const worksheet = workbook.addWorksheet('ط·ظ„ط¨ط§طھ ط§ظ„ط¹ظ…ظ„ط§ط،', {
     views: [{ rightToLeft: true }]
   });
 
   worksheet.properties.defaultRowHeight = 22;
   worksheet.mergeCells('A1:D1');
-  worksheet.getCell('A1').value = 'تقرير طلبات العملاء';
+  worksheet.getCell('A1').value = 'طھظ‚ط±ظٹط± ط·ظ„ط¨ط§طھ ط§ظ„ط¹ظ…ظ„ط§ط،';
   worksheet.getCell('A1').font = { bold: true, size: 16 };
   worksheet.getCell('A1').alignment = { horizontal: 'center' };
 
   const summaryRows = [
-    ['إجمالي الطلبات', totals.total_requests],
-    ['الطلبات المكتملة', totals.completed_requests],
-    ['الطلبات الملغاة', totals.cancelled_requests],
-    ['الطلبات المعلقة', totals.pending_requests],
-    ['إجمالي قيمة الطلبات', totals.order_amount_sum],
-    ['إجمالي الضريبة', totals.vat_amount_sum],
-    ['الإجمالي شامل الضريبة', totals.total_amount_sum],
-    ['متوسط قيمة الطلب', totals.average_order_value],
-    ['أعلى قيمة طلب', totals.max_order_value],
-    ['طلبات بدون مورد', totals.tickets_without_supplier],
-    ['طلبات مرتبطة بموردين', totals.tickets_with_suppliers]
+    ['ط¥ط¬ظ…ط§ظ„ظٹ ط§ظ„ط·ظ„ط¨ط§طھ', totals.total_requests],
+    ['ط§ظ„ط·ظ„ط¨ط§طھ ط§ظ„ظ…ظƒطھظ…ظ„ط©', totals.completed_requests],
+    ['ط§ظ„ط·ظ„ط¨ط§طھ ط§ظ„ظ…ظ„ط؛ط§ط©', totals.cancelled_requests],
+    ['ط§ظ„ط·ظ„ط¨ط§طھ ط§ظ„ظ…ط¹ظ„ظ‚ط©', totals.pending_requests],
+    ['ط¥ط¬ظ…ط§ظ„ظٹ ظ‚ظٹظ…ط© ط§ظ„ط·ظ„ط¨ط§طھ', totals.order_amount_sum],
+    ['ط¥ط¬ظ…ط§ظ„ظٹ ط§ظ„ط¶ط±ظٹط¨ط©', totals.vat_amount_sum],
+    ['ط§ظ„ط¥ط¬ظ…ط§ظ„ظٹ ط´ط§ظ…ظ„ ط§ظ„ط¶ط±ظٹط¨ط©', totals.total_amount_sum],
+    ['ظ…طھظˆط³ط· ظ‚ظٹظ…ط© ط§ظ„ط·ظ„ط¨', totals.average_order_value],
+    ['ط£ط¹ظ„ظ‰ ظ‚ظٹظ…ط© ط·ظ„ط¨', totals.max_order_value],
+    ['ط·ظ„ط¨ط§طھ ط¨ط¯ظˆظ† ظ…ظˆط±ط¯', totals.tickets_without_supplier],
+    ['ط·ظ„ط¨ط§طھ ظ…ط±طھط¨ط·ط© ط¨ظ…ظˆط±ط¯ظٹظ†', totals.tickets_with_suppliers]
   ];
 
   summaryRows.forEach((row, index) => {
@@ -549,27 +551,27 @@ async function exportWorkbook(queryParams = {}) {
 
   const headerRowNumber = summaryRows.length + 5;
   const headers = [
-    'رقم التذكرة',
-    'اسم العميل',
-    'الجوال',
-    'البريد الإلكتروني',
-    'الدولة',
-    'المنطقة',
-    'وصف الطلب',
-    'المسؤول',
-    'الحالة',
-    'الأولوية',
-    'المصدر',
-    'ملاحظات داخلية',
-    'سبب الإلغاء',
-    'قيمة الطلب',
-    'الضريبة',
-    'الإجمالي',
-    'الموردون',
-    'هواتف الموردين',
-    'بريد الموردين',
-    'تاريخ الإنشاء',
-    'تاريخ الإغلاق'
+    'ط±ظ‚ظ… ط§ظ„طھط°ظƒط±ط©',
+    'ط§ط³ظ… ط§ظ„ط¹ظ…ظٹظ„',
+    'ط§ظ„ط¬ظˆط§ظ„',
+    'ط§ظ„ط¨ط±ظٹط¯ ط§ظ„ط¥ظ„ظƒطھط±ظˆظ†ظٹ',
+    'ط§ظ„ط¯ظˆظ„ط©',
+    'ط§ظ„ظ…ظ†ط·ظ‚ط©',
+    'ظˆطµظپ ط§ظ„ط·ظ„ط¨',
+    'ط§ظ„ظ…ط³ط¤ظˆظ„',
+    'ط§ظ„ط­ط§ظ„ط©',
+    'ط§ظ„ط£ظˆظ„ظˆظٹط©',
+    'ط§ظ„ظ…طµط¯ط±',
+    'ظ…ظ„ط§ط­ط¸ط§طھ ط¯ط§ط®ظ„ظٹط©',
+    'ط³ط¨ط¨ ط§ظ„ط¥ظ„ط؛ط§ط،',
+    'ظ‚ظٹظ…ط© ط§ظ„ط·ظ„ط¨',
+    'ط§ظ„ط¶ط±ظٹط¨ط©',
+    'ط§ظ„ط¥ط¬ظ…ط§ظ„ظٹ',
+    'ط§ظ„ظ…ظˆط±ط¯ظˆظ†',
+    'ظ‡ظˆط§طھظپ ط§ظ„ظ…ظˆط±ط¯ظٹظ†',
+    'ط¨ط±ظٹط¯ ط§ظ„ظ…ظˆط±ط¯ظٹظ†',
+    'طھط§ط±ظٹط® ط§ظ„ط¥ظ†ط´ط§ط،',
+    'طھط§ط±ظٹط® ط§ظ„ط¥ط؛ظ„ط§ظ‚'
   ];
 
   worksheet.getRow(headerRowNumber).values = headers;
@@ -617,6 +619,83 @@ async function exportWorkbook(queryParams = {}) {
   return workbook.xlsx.writeBuffer();
 }
 
+
+async function uploadAttachment(ticketId, file, data = {}, userId = null) {
+  if (!ticketId) {
+    throw createHttpError(400, 'Ticket id is required');
+  }
+
+  if (!file) {
+    throw createHttpError(400, 'No file uploaded');
+  }
+
+  const ticketResult = await query(
+    'SELECT id FROM request_tickets WHERE id = $1 LIMIT 1',
+    [ticketId]
+  );
+
+  if (ticketResult.rows.length === 0) {
+    throw createHttpError(404, 'Request ticket not found');
+  }
+
+  const safeOriginalName = String(file.originalname || 'attachment')
+    .replace(/[^\w.\-\u0600-\u06FF ]+/g, '')
+    .replace(/\s+/g, '_');
+
+  const storedFileName = `${Date.now()}-${safeOriginalName}`;
+  const relativeDir = path.join('request-tickets', String(ticketId));
+  const absoluteDir = path.join(process.cwd(), 'uploads', relativeDir);
+  const absolutePath = path.join(absoluteDir, storedFileName);
+  const relativePath = path.join(relativeDir, storedFileName).replace(/\\/g, '/');
+  const fileUrl = `/uploads/${relativePath}`;
+
+  await fs.mkdir(absoluteDir, { recursive: true });
+
+  if (file.buffer) {
+    await fs.writeFile(absolutePath, file.buffer);
+  } else if (file.path) {
+    const fileContent = await fs.readFile(file.path);
+    await fs.writeFile(absolutePath, fileContent);
+  } else {
+    throw createHttpError(400, 'Uploaded file data is missing');
+  }
+
+  const attachmentType = data.attachment_type || data.type || 'attachment';
+
+  const result = await query(
+    `
+      INSERT INTO request_ticket_attachments
+        (
+          ticket_id,
+          attachment_type,
+          file_name,
+          file_url,
+          file_path,
+          file_mime_type,
+          file_size,
+          uploaded_by
+        )
+      VALUES
+        ($1, $2, $3, $4, $5, $6, $7, $8)
+      RETURNING *
+    `,
+    [
+      ticketId,
+      attachmentType,
+      file.originalname || storedFileName,
+      fileUrl,
+      path.join('uploads', relativePath).replace(/\\/g, '/'),
+      file.mimetype || null,
+      file.size || null,
+      userId
+    ]
+  );
+
+  return {
+    data: result.rows[0]
+  };
+}
+
 module.exports = {
   list,
   getById,
@@ -625,5 +704,7 @@ module.exports = {
   remove,
   summary,
   dashboardSummary,
-  exportWorkbook
+  exportWorkbook,
+  uploadAttachment
 };
+

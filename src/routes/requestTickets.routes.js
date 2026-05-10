@@ -1,6 +1,7 @@
 const express = require('express');
 const { authenticate } = require('../middleware/authenticate');
 const { authorize } = require('../middleware/authorize');
+const { multipartUpload } = require('../middleware/multipartUpload');
 const { asyncHandler } = require('../utils/asyncHandler');
 const requestTicketsService = require('../services/requestTickets.service');
 
@@ -52,6 +53,28 @@ router.post(
   authorize('request_tickets:write'),
   asyncHandler(async (req, res) => {
     const data = await requestTicketsService.create(req.body);
+    res.status(201).json(data);
+  })
+);
+
+router.post(
+  '/:id/attachments/upload',
+  authorize('request_tickets:write'),
+  multipartUpload,
+  asyncHandler(async (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({
+        message: 'لم يتم رفع أي ملف'
+      });
+    }
+
+    const data = await requestTicketsService.uploadAttachment(
+      req.params.id,
+      req.file,
+      req.body,
+      req.user?.id
+    );
+
     res.status(201).json(data);
   })
 );
